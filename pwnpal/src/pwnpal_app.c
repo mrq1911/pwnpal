@@ -317,6 +317,10 @@ typedef struct {
     TextInput* text_input; // "Set name" editor (view id 1)
     char name_buf[PERSONA_NAME_MAX]; // edit buffer for the name text input
 
+    // liveness stamp: furi tick of the last RAW byte from the ESP, set in the rx IRQ. the
+    // watchdog uses this (not fully-parsed lines) so an SD-write burst that stalls line
+    // processing can't be mistaken for a dead board. volatile: written in ISR, read in timer.
+    volatile uint32_t last_rx_tick;
     // line assembly, worker-thread only; sized for a full hex EAPOL line, not just JSON
     char line[1024];
     size_t line_len;
@@ -2748,6 +2752,7 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
                         if(now_adv) {
                             model->advertising_since = model->tick_secs;
                             model->last_rx_secs = model->tick_secs;
+                            app->last_rx_tick = furi_get_tick(); // reset liveness on resume
                         } else {
                             model->link_down = false;
                         }
@@ -3319,7 +3324,10 @@ static void pwnpal_timer_callback(void* ctx) {
 
                 // link watchdog: warn only while advertising, past boot grace + silence timeout. unsigned sub is safe (stamps <= tick_secs)
                 if(model->advertising) {
-                    uint32_t since_rx = model->tick_secs - model->last_rx_secs;
+                    // liveness from raw bytes (rx IRQ stamp), so a stalled worker/SD-write burst
+                    // that lags line processing isn't misread as a dead board.
+                    uint32_t freq = furi_kernel_get_tick_frequency();
+                    uint32_t since_rx = (furi_get_tick() - app->last_rx_tick) / (freq ? freq : 1);
                     uint32_t since_adv = model->tick_secs - model->advertising_since;
                     // deep saver dozes the radio ~25s at a time (near-silent) — don't flash the
                     // "no ESP32" screen then; only warn after a much longer real silence.
@@ -3411,6 +3419,7 @@ static void pwnpal_on_irq_cb(
     PwnpalApp* app = context;
     if(ev & FuriHalSerialRxEventData) {
         uint8_t data = furi_hal_serial_async_rx(serial_handle);
+        app->last_rx_tick = furi_get_tick(); // liveness: bytes on the wire = board alive
         furi_stream_buffer_send(app->rx_stream, &data, 1, 0);
         furi_thread_flags_set(furi_thread_get_id(app->worker_thread), WorkerEventRx);
     }
@@ -3589,6 +3598,7 @@ static PwnpalApp* pwnpal_app_alloc(void) {
     view_dispatcher_switch_to_view(app->view_dispatcher, 0);
 
     // Serial
+    app->last_rx_tick = furi_get_tick(); // seed liveness so the watchdog doesn't fire pre-first-byte
     app->serial_handle = furi_hal_serial_control_acquire(PWNPAL_UART_CHANNEL);
     furi_check(app->serial_handle);
     furi_hal_serial_init(app->serial_handle, PWNPAL_UART_BAUD);

@@ -1392,7 +1392,8 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
     line_extract_int(line, "\"dcloak\":", &dcloak); // hidden APs de-cloaked (ESSID recovered)
 
     uint32_t up = 0;
-    char lat[16], lon[16];
+    char lat[16], lon[16], mode[8] = {0}, eff[8] = {0};
+    int moving = 0;
     with_view_model(
         app->view, PwnpalModel * model,
         {
@@ -1401,6 +1402,11 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
             lat[sizeof(lat) - 1] = '\0';
             strncpy(lon, model->last_lon, sizeof(lon));
             lon[sizeof(lon) - 1] = '\0';
+            // set mode vs effective mode (Auto -> wardrive/siege) + the movement decision, so
+            // "is Auto switching correctly?" is answerable offline (moving should => eff=WDRV).
+            strncpy(mode, capture_name(model->capture_mode), sizeof(mode) - 1);
+            strncpy(eff, capture_name(effective_capture(model)), sizeof(eff) - 1);
+            moving = model->auto_moving ? 1 : 0;
         },
         false);
 
@@ -1410,14 +1416,14 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
         if(storage_file_size(f) == 0) {
             const char* h =
                 "uptime_s,lat,lon,epoch,recon,attackable,chans,assoc,deauth,unicast,sta,hs,pmkid,"
-                "miss,dpmf,dnocli,dcloak\n";
+                "miss,dpmf,dnocli,dcloak,mode,eff,moving\n";
             storage_file_write(f, h, strlen(h));
         }
-        char row[200];
+        char row[224];
         snprintf(
-            row, sizeof(row), "%lu,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+            row, sizeof(row), "%lu,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d\n",
             (unsigned long)up, lat, lon, n, recon, att, chans, assoc, deauth, uni, sta, hs, pmkid,
-            miss, dpmf, dnocli, dcloak);
+            miss, dpmf, dnocli, dcloak, mode, eff, moving);
         storage_file_write(f, row, strlen(row));
     }
     storage_file_close(f);

@@ -277,6 +277,31 @@ def main():
         tag="pwnpal_obj.reportHandshake(")
     steps += d
 
+    # 3b2. de-cloak: a client's (re)assoc request (mgmt subtype 0x00/0x20) names a HIDDEN AP in
+    # the clear. harvest it -> reportDecloak adopts the ESSID + emits PWNPAL_AP so the capture
+    # becomes crackable. runs before the PROBE branch; doesn't return (beacons fall through).
+    t, d = insert_before(
+        t,
+        "  if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PROBE) ||",
+        "  if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) &&\n"
+        "      (type == WIFI_PKT_MGMT) &&\n"
+        "      (((snifferPacket->payload[0] & 0xf0) == 0x00) ||\n"
+        "       ((snifferPacket->payload[0] & 0xf0) == 0x20))) {\n"
+        "    #ifdef HAS_GPS\n"
+        "      bool pf_fix = gps_obj.getFixStatus() && gps_obj.getNumSats() >= 4;\n"
+        "      double pf_lat = pf_fix ? atof(gps_obj.getLat().c_str()) : 0.0;\n"
+        "      double pf_lon = pf_fix ? atof(gps_obj.getLon().c_str()) : 0.0;\n"
+        "    #else\n"
+        "      bool pf_fix = false; double pf_lat = 0.0; double pf_lon = 0.0;\n"
+        "    #endif\n"
+        "    pwnpal_obj.reportDecloak(snifferPacket->payload, len - 4,\n"
+        "                                snifferPacket->rx_ctrl.rssi,\n"
+        "                                snifferPacket->rx_ctrl.channel,\n"
+        "                                pf_fix, pf_lat, pf_lon);\n"
+        "  }\n",
+        tag="pwnpal_obj.reportDecloak(")
+    steps += d
+
     # 3c. recon: dedup non-pwngrid beacons into PWNPAL_AP lines. sits inside
     # if(type==MGMT)->if(payload[0]==0x80) after the pwngrid mac_match return, so peers
     # never reach it. len here is FCS-stripped (-4).

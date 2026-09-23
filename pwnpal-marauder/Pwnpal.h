@@ -71,6 +71,12 @@ class Pwnpal {
     // rx callback, every DATA frame, allocation-free.
     void reportClient(const uint8_t* payload, int length);
 
+    // de-cloak: a client's (re)association request to a HIDDEN AP carries the real ESSID.
+    // adopt it (emits PWNPAL_AP -> Flipper splices the ESSID beacon into an existing capture,
+    // making the hidden-AP handshake crackable). assoc-req subtype 0x00 / reassoc-req 0x20.
+    void reportDecloak(const uint8_t* payload, int length, int rssi, int channel,
+                       bool has_fix, double lat, double lon);
+
     // true once a persona is loaded.
     bool ready() const { return _ready; }
 

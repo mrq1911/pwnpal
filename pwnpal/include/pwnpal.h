@@ -14,7 +14,10 @@
 
 // ESP32-absence: board sends PWNPAL_ADV ~2x/sec; silence for LINK_TIMEOUT after
 // LINK_GRACE (covers boot + StartScan) warns the user
-#define PWNPAL_LINK_TIMEOUT_SECS 5
+// the ESP goes quiet for several seconds while attackChannel() hammers a dense channel
+// (assoc+deauth over 20-30 APs) — that's a BUSY board, not a dead one. keep the timeout well
+// above the worst-case attack-phase gap so we only cry "no ESP32" on a real disconnect.
+#define PWNPAL_LINK_TIMEOUT_SECS 15
 #define PWNPAL_LINK_GRACE_SECS 10
 
 // setup link QR'd on the "no ESP32" screen; <=53 bytes so the QR stays version-3 (29x29) at 2px/module

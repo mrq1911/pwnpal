@@ -1,10 +1,10 @@
-// Host unit tests for the pure geo/identity helpers in pwnfriend/src/pwnfriend_geo.h.
+// Host unit tests for the pure geo/identity helpers in pwnpal/src/pwnpal_geo.h.
 // No hardware needed: compile with g++ and run (see tests/run.sh).
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 
-#include "../pwnfriend/src/pwnfriend_geo.h"
+#include "../pwnpal/src/pwnpal_geo.h"
 
 static int failures = 0;
 #define CHECK(cond, name)                \

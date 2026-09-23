@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Add the `pwnfriend` command to an ESP32 Marauder checkout.
+"""Add the `pwnpal` command to an ESP32 Marauder checkout.
 
 Anchored, idempotent source surgery (automated PATCH.md): finds quoted anchor
 strings and inserts our hooks, aborting loudly if an anchor is missing.
 
 Usage:
-    python3 apply_pwnfriend.py /path/to/marauder            # dir with esp32_marauder/
-    python3 apply_pwnfriend.py /path/to/marauder/esp32_marauder
+    python3 apply_pwnpal.py /path/to/marauder            # dir with esp32_marauder/
+    python3 apply_pwnpal.py /path/to/marauder/esp32_marauder
 
 Verified against justcallmekoko/ESP32Marauder and bpmcircuits/ESP32Marauder_FEBERIS.
 """
@@ -82,18 +82,18 @@ def main():
     src = find_src(Path(sys.argv[1]).resolve())
     print(f"patching Marauder at {src}")
 
-    # 0. copy the module in; bake our short commit into pwnfriend_commit.h (fw=<hash> on PWNFRIEND_ADV).
+    # 0. copy the module in; bake our short commit into pwnpal_commit.h (fw=<hash> on PWNPAL_ADV).
     import subprocess
     try:
         commit = subprocess.check_output(
             ["git", "-C", str(HERE), "rev-parse", "--short=7", "HEAD"], text=True).strip()
     except Exception:
         commit = "nogit"
-    (HERE / "pwnfriend_commit.h").write_text(
-        '#pragma once\n#define PWNFRIEND_FW_COMMIT "%s"\n' % commit)
+    (HERE / "pwnpal_commit.h").write_text(
+        '#pragma once\n#define PWNPAL_FW_COMMIT "%s"\n' % commit)
     print(f"  fw commit: {commit}")
 
-    for name in ("Pwnfriend.h", "Pwnfriend.cpp", "pwnfriend_frames.h", "pwnfriend_commit.h"):
+    for name in ("Pwnpal.h", "Pwnpal.cpp", "pwnpal_frames.h", "pwnpal_commit.h"):
         shutil.copy2(HERE / name, src / name)
         print(f"  copied {name}")
 
@@ -105,17 +105,17 @@ def main():
     t, done = insert_after(
         t,
         "WiFiScan wifi_scan_obj;",
-        '#include "Pwnfriend.h"\nPwnfriend pwnfriend_obj;\n',
-        tag="Pwnfriend pwnfriend_obj;",
+        '#include "Pwnpal.h"\nPwnpal pwnpal_obj;\n',
+        tag="Pwnpal pwnpal_obj;",
     )
     steps += done
-    # the pwnfriend advertise command grows with the whitelist + target (~370B); the default
+    # the pwnpal advertise command grows with the whitelist + target (~370B); the default
     # 256B UART RX buffer overflows mid-WiFi-burst, dropping the trailing '\n' -> -ch/-target
     # lost and the channel never pins. bigger buffer survives the loop stall (cf. Serial2 GPS fix).
     t, dbuf = insert_before(
         t,
         "Serial.begin(115200);",
-        "  Serial.setRxBufferSize(1024);  // pwnfriend: hold the full advertise command\n",
+        "  Serial.setRxBufferSize(1024);  // pwnpal: hold the full advertise command\n",
         tag="Serial.setRxBufferSize(1024)",
     )
     _write(p, t); steps += dbuf
@@ -124,12 +124,12 @@ def main():
     p = src / "WiFiScan.h"
     t = _read(p)
     t, d1 = insert_after(
-        t, "#define WIFI_SCAN_PWN ", "#define WIFI_SCAN_PWNFRIEND 111\n",
-        tag="WIFI_SCAN_PWNFRIEND")
+        t, "#define WIFI_SCAN_PWN ", "#define WIFI_SCAN_PWNPAL 111\n",
+        tag="WIFI_SCAN_PWNPAL")
     t, d2 = insert_after(
         t, "void RunPwnScan(uint8_t scan_mode, uint16_t color);",
-        "    void RunPwnfriendScan(uint8_t scan_mode, uint16_t color);\n",
-        tag="RunPwnfriendScan")
+        "    void RunPwnpalScan(uint8_t scan_mode, uint16_t color);\n",
+        tag="RunPwnpalScan")
     _write(p, t); steps += d1 + d2
 
     # 3. WiFiScan.cpp — include, runner, dispatch, sniff-report, main() tick, sniffer guard.
@@ -138,17 +138,17 @@ def main():
 
     t, d = insert_after(
         t, '#include "WiFiScan.h"',
-        '#include "Pwnfriend.h"\nextern Pwnfriend pwnfriend_obj;\n',
-        tag="extern Pwnfriend pwnfriend_obj;")
+        '#include "Pwnpal.h"\nextern Pwnpal pwnpal_obj;\n',
+        tag="extern Pwnpal pwnpal_obj;")
     steps += d
 
-    runner = '''void WiFiScan::RunPwnfriendScan(uint8_t scan_mode, uint16_t color) {
+    runner = '''void WiFiScan::RunPwnpalScan(uint8_t scan_mode, uint16_t color) {
   (void)scan_mode; (void)color;
   // Real scan start: clear the per-session capture dedup tables here (NOT in
   // configureFromArgs, which the Flipper re-runs every ~15s to refresh the
   // persona) so a persona refresh doesn't re-count pwnd APs / inflate pwnd_tot.
-  pwnfriend_obj.beginSession();
-  startPcap("pwnfriend");
+  pwnpal_obj.beginSession();
+  startPcap("pwnpal");
   // Mirror Marauder's beacon-attack TX init EXACTLY. The AP config
   // (esp_wifi_set_config) is REQUIRED: without it the AP iface never fully
   // comes up and esp_wifi_80211_tx(WIFI_IF_AP) silently radiates nothing
@@ -173,30 +173,30 @@ def main():
   this->changeChannel(this->set_channel);
   this->wifi_initialized = true;
   initTime = millis();
-  esp_wifi_set_max_tx_power(pwnfriend_obj.saverLevel() ? 40 : 78);  // battery-saver TX cut
+  esp_wifi_set_max_tx_power(pwnpal_obj.saverLevel() ? 40 : 78);  // battery-saver TX cut
 }
 
 '''
     t, d = insert_before(
         t, "void WiFiScan::RunPwnScan(uint8_t scan_mode, uint16_t color)",
-        runner, tag="RunPwnfriendScan(uint8_t")
+        runner, tag="RunPwnpalScan(uint8_t")
     steps += d
 
     t, d = insert_after(
         t,
         "    RunPwnScan(scan_mode, color);",
-        "  else if (scan_mode == WIFI_SCAN_PWNFRIEND)\n"
-        "    RunPwnfriendScan(scan_mode, color);\n",
-        tag="RunPwnfriendScan(scan_mode, color);")
+        "  else if (scan_mode == WIFI_SCAN_PWNPAL)\n"
+        "    RunPwnpalScan(scan_mode, color);\n",
+        tag="RunPwnpalScan(scan_mode, color);")
     steps += d
 
-    # broadcast on every main() tick in pwnfriend mode, skip the rest. also feed the GPS
-    # fix status through so the friend can emit PWNFRIEND_GPS (throttled inside reportGps).
+    # broadcast on every main() tick in pwnpal mode, skip the rest. also feed the GPS
+    # fix status through so the friend can emit PWNPAL_GPS (throttled inside reportGps).
     t, d = insert_after(
         t,
         "void WiFiScan::main(uint32_t currentTime)\n{",
-        "  if (currentScanMode == WIFI_SCAN_PWNFRIEND) {\n"
-        "    int pf_sv = pwnfriend_obj.saverTick(currentTime);  // deep saver: duty-cycle radio\n"
+        "  if (currentScanMode == WIFI_SCAN_PWNPAL) {\n"
+        "    int pf_sv = pwnpal_obj.saverTick(currentTime);  // deep saver: duty-cycle radio\n"
         "    if (pf_sv == 1) { esp_wifi_set_promiscuous(false); esp_wifi_stop(); }  // doze off\n"
         "    else if (pf_sv == 2) {  // wake: bring the radio back up (no beginSession, keep state)\n"
         "      esp_wifi_start();\n"
@@ -204,22 +204,22 @@ def main():
         "      esp_wifi_set_promiscuous_filter(&filt);\n"
         "      esp_wifi_set_promiscuous_rx_cb(&beaconSnifferCallback);\n"
         "      this->changeChannel(this->set_channel);\n"
-        "      esp_wifi_set_max_tx_power(pwnfriend_obj.saverLevel() ? 40 : 78);\n"
+        "      esp_wifi_set_max_tx_power(pwnpal_obj.saverLevel() ? 40 : 78);\n"
         "      initTime = currentTime;\n"
         "    }\n"
         "    if (pf_sv == 1 || pf_sv == 3) return;  // dozing: skip broadcast\n"
         "    if (currentTime - initTime >= 500) {\n"
         "      initTime = millis();\n"
-        "      pwnfriend_obj.broadcast();\n"
+        "      pwnpal_obj.broadcast();\n"
         "      #ifdef HAS_GPS\n"
-        "        pwnfriend_obj.reportGps(gps_obj.getFixStatus(), gps_obj.getNumSats(),\n"
+        "        pwnpal_obj.reportGps(gps_obj.getFixStatus(), gps_obj.getNumSats(),\n"
         "                                gps_obj.getAccuracy(), gps_obj.getLat().c_str(),\n"
         "                                gps_obj.getLon().c_str());\n"
         "      #endif\n"
         "    }\n"
         "    return;\n"
         "  }\n",
-        tag="pwnfriend_obj.broadcast();")
+        tag="pwnpal_obj.broadcast();")
     steps += d
 
     # let the sniffer callback process our mode and branch to reportPeer.
@@ -227,14 +227,14 @@ def main():
         t,
         "      (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWN)) {",
         "      (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWN) ||\n"
-        "      (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND)) {",
-        tag="WIFI_SCAN_PWNFRIEND)) {")
+        "      (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL)) {",
+        tag="WIFI_SCAN_PWNPAL)) {")
     steps += d
 
     t, d = replace_once(
         t,
         "          wifi_scan_obj.processPwnagotchiBeacon(snifferPacket->payload, len);",
-        "          if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) {\n"
+        "          if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) {\n"
         "            #ifdef HAS_GPS\n"
         "              bool pf_fix = gps_obj.getFixStatus() && gps_obj.getNumSats() >= 4;\n"
         "              double pf_lat = pf_fix ? atof(gps_obj.getLat().c_str()) : 0.0;\n"
@@ -242,20 +242,20 @@ def main():
         "            #else\n"
         "              bool pf_fix = false; double pf_lat = 0.0; double pf_lon = 0.0;\n"
         "            #endif\n"
-        "            pwnfriend_obj.reportPeer(snifferPacket->payload, len, "
+        "            pwnpal_obj.reportPeer(snifferPacket->payload, len, "
         "snifferPacket->rx_ctrl.rssi, snifferPacket->rx_ctrl.channel, pf_fix, pf_lat, pf_lon);\n"
         "          } else\n"
         "            wifi_scan_obj.processPwnagotchiBeacon(snifferPacket->payload, len);",
-        tag="pwnfriend_obj.reportPeer(")
+        tag="pwnpal_obj.reportPeer(")
     steps += d
 
     # 3b. capture path: EAPOL/PMKID come as DATA frames; beaconSnifferCallback only handles
-    # MGMT, so handle pwnfriend DATA first and append EAPOL to the pcap. len here is still
+    # MGMT, so handle pwnpal DATA first and append EAPOL to the pcap. len here is still
     # rx_ctrl.sig_len (correct for DATA).
     t, d = insert_before(
         t,
         "  if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PROBE) ||",
-        "  if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) &&\n"
+        "  if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) &&\n"
         "      (type == WIFI_PKT_DATA)) {\n"
         "    #ifdef HAS_GPS\n"
         "      bool pf_fix = gps_obj.getFixStatus() && gps_obj.getNumSats() >= 4;\n"
@@ -266,24 +266,24 @@ def main():
         "    #endif\n"
         "    // Harvest the client station from every DATA frame so active mode can\n"
         "    // UNICAST-deauth it (broadcast deauth is ignored by modern clients).\n"
-        "    pwnfriend_obj.reportClient(snifferPacket->payload, len);\n"
-        "    if (pwnfriend_obj.reportHandshake(snifferPacket->payload, len,\n"
+        "    pwnpal_obj.reportClient(snifferPacket->payload, len);\n"
+        "    if (pwnpal_obj.reportHandshake(snifferPacket->payload, len,\n"
         "                                      snifferPacket->rx_ctrl.rssi,\n"
         "                                      snifferPacket->rx_ctrl.channel,\n"
         "                                      pf_fix, pf_lat, pf_lon))\n"
         "      buffer_obj.append(snifferPacket, len);\n"
         "    return;\n"
         "  }\n",
-        tag="pwnfriend_obj.reportHandshake(")
+        tag="pwnpal_obj.reportHandshake(")
     steps += d
 
-    # 3c. recon: dedup non-pwngrid beacons into PWNFRIEND_AP lines. sits inside
+    # 3c. recon: dedup non-pwngrid beacons into PWNPAL_AP lines. sits inside
     # if(type==MGMT)->if(payload[0]==0x80) after the pwngrid mac_match return, so peers
     # never reach it. len here is FCS-stripped (-4).
     t, d = insert_before(
         t,
         "        if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWN) {",
-        "        if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) {\n"
+        "        if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) {\n"
         "          #ifdef HAS_GPS\n"
         "            bool pf_fix = gps_obj.getFixStatus() && gps_obj.getNumSats() >= 4;\n"
         "            double pf_lat = pf_fix ? atof(gps_obj.getLat().c_str()) : 0.0;\n"
@@ -291,14 +291,14 @@ def main():
         "          #else\n"
         "            bool pf_fix = false; double pf_lat = 0.0; double pf_lon = 0.0;\n"
         "          #endif\n"
-        "          if (pwnfriend_obj.reportAP(snifferPacket->payload, len,\n"
+        "          if (pwnpal_obj.reportAP(snifferPacket->payload, len,\n"
         "                                     snifferPacket->rx_ctrl.rssi,\n"
         "                                     snifferPacket->rx_ctrl.channel,\n"
         "                                     pf_fix, pf_lat, pf_lon))\n"
         "            buffer_obj.append(snifferPacket, len);\n"
         "          return;\n"
         "        }\n",
-        tag="pwnfriend_obj.reportAP(")
+        tag="pwnpal_obj.reportAP(")
     steps += d
     _write(p, t)
 
@@ -313,10 +313,10 @@ def main():
             t, d = replace_once(
                 t,
                 '  MicroNMEA::sendSentence(Serial2, "$PSTMSRR");',
-                "  // pwnfriend: no per-boot $PSTMSRR reset -- restarting the GNSS engine every\n"
+                "  // pwnpal: no per-boot $PSTMSRR reset -- restarting the GNSS engine every\n"
                 "  // boot discards a backup-powered hot start and slows TTFF (Teseo only; a\n"
                 "  // reset is only needed to *change* the mask, which SAVEPAR already persisted).",
-                tag="pwnfriend: no per-boot $PSTMSRR")
+                tag="pwnpal: no per-boot $PSTMSRR")
             _write(p, t); steps += d
         except AnchorError:
             print("  note: $PSTMSRR absent in GpsInterface.cpp; skipped GPS-reset patch")
@@ -330,7 +330,7 @@ def main():
                 t,
                 '  MicroNMEA::sendSentence(Serial2, "$PSTMSAVEPAR");',
                 '  MicroNMEA::sendSentence(Serial2, "$PSTMSAVEPAR");\n'
-                '  MicroNMEA::sendSentence(Serial2, "$PCAS04,7");  // pwnfriend: GPS+BDS+GLONASS (CASIC)',
+                '  MicroNMEA::sendSentence(Serial2, "$PCAS04,7");  // pwnpal: GPS+BDS+GLONASS (CASIC)',
                 tag='"$PCAS04,7"')
             _write(p, t); steps += d
         except AnchorError:
@@ -344,7 +344,7 @@ def main():
             t, d = replace_once(
                 t,
                 "  Serial2.begin(9600, SERIAL_8N1, GPS_TX, GPS_RX);",
-                "  Serial2.setRxBufferSize(4096);  // pwnfriend: survive loop stalls during WiFi bursts\n"
+                "  Serial2.setRxBufferSize(4096);  // pwnpal: survive loop stalls during WiFi bursts\n"
                 "  Serial2.begin(9600, SERIAL_8N1, GPS_TX, GPS_RX);",
                 tag="Serial2.setRxBufferSize(4096)")
             _write(p, t); steps += d
@@ -356,8 +356,8 @@ def main():
     t = _read(p)
     t, d = insert_after(
         t, 'const char PROGMEM SNIFF_PWN_CMD[] = "sniffpwn";',
-        'const char PROGMEM PWNFRIEND_CMD[] = "pwnfriend";\n',
-        tag="PWNFRIEND_CMD")
+        'const char PROGMEM PWNPAL_CMD[] = "pwnpal";\n',
+        tag="PWNPAL_CMD")
     _write(p, t); steps += d
 
     # 5. CommandLine.cpp — include + command handler.
@@ -365,27 +365,27 @@ def main():
     t = _read(p)
     t, d1 = insert_after(
         t, '#include "CommandLine.h"',
-        '#include "Pwnfriend.h"\nextern Pwnfriend pwnfriend_obj;\n',
-        tag="extern Pwnfriend pwnfriend_obj;")
-    handler = '''    else if (cmd_args.get(0) == PWNFRIEND_CMD) {
-      if (!pwnfriend_obj.configureFromArgs(&cmd_args)) {
-        Serial.println(F("PWNFRIEND_ERR bad -id (need 64 hex)"));
-      } else if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) {
+        '#include "Pwnpal.h"\nextern Pwnpal pwnpal_obj;\n',
+        tag="extern Pwnpal pwnpal_obj;")
+    handler = '''    else if (cmd_args.get(0) == PWNPAL_CMD) {
+      if (!pwnpal_obj.configureFromArgs(&cmd_args)) {
+        Serial.println(F("PWNPAL_ERR bad -id (need 64 hex)"));
+      } else if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) {
         // Already running: configureFromArgs() already refreshed + rebuilt the
         // persona. Do NOT StartScan again -- that would tear down/re-init WiFi,
         // wipe recon, and reset the channel hop. The ~15s command re-send is
         // only a live persona update.
-        Serial.println(F("pwnfriend persona updated"));
+        Serial.println(F("pwnpal persona updated"));
       } else {
-        Serial.print(F("Starting pwnfriend. Stop with "));
+        Serial.print(F("Starting pwnpal. Stop with "));
         Serial.println(STOPSCAN_CMD);
-        wifi_scan_obj.StartScan(WIFI_SCAN_PWNFRIEND, TFT_MAGENTA);
+        wifi_scan_obj.StartScan(WIFI_SCAN_PWNPAL, TFT_MAGENTA);
       }
     }
 '''
     t, d2 = insert_before(
         t, "    else if (cmd_args.get(0) == SNIFF_PWN_CMD) {",
-        handler, tag="cmd_args.get(0) == PWNFRIEND_CMD")
+        handler, tag="cmd_args.get(0) == PWNPAL_CMD")
     _write(p, t); steps += d1 + d2
 
     print(f"done ({steps} insertion(s) applied; already-applied steps skipped)")

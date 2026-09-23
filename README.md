@@ -9,13 +9,13 @@ This program will interface the pwnagotchi with the flipper. This will be accomp
 pwnagotchi-flipper
  |--> flipagotchi/         Flipper-side app: renders a wired pwnagotchi's screen
  |--> pwnzero/             pwnagotchi-side plugin that feeds flipagotchi over UART
- |--> pwnfriend/           Flipper-side app: a social pwngrid peer (see below)
- |--> pwnfriend-marauder/  ESP32 Marauder fork bits that broadcast the friend beacon
+ |--> pwnpal/           Flipper-side app: a social pwngrid peer (see below)
+ |--> pwnpal-marauder/  ESP32 Marauder fork bits that broadcast the friend beacon
 ```
 - flipagotchi is the Flipper-side application
 - pwnzero is the pwnagotchi-side application
 
-## Pwnfriend: give your lonely pwnagotchi a friend
+## Pwnpal: give your lonely pwnagotchi a friend
 
 ```
          _    __/\_______  _______
@@ -27,22 +27,22 @@ pwnagotchi-flipper
 ```
 
 A pwnagotchi gets sad when no other units are around. Marauder can already detect a
-pwnagotchi's beacons, but it never answers — so your unit stays lonely. `pwnfriend` makes
+pwnagotchi's beacons, but it never answers — so your unit stays lonely. `pwnpal` makes
 the Flipper's ESP32 board broadcast a pwngrid-compatible advertisement so your pwnagotchi
 detects a peer, says "Hello!", and (thanks to a stable, growing identity) befriends it
 over time. The Flipper keeps a little persona that levels up the longer it runs and the
 more units it meets.
 
-> **✅ Fully Marauder-compatible.** pwnfriend ships as a small patch on top of ESP32
+> **✅ Fully Marauder-compatible.** pwnpal ships as a small patch on top of ESP32
 > Marauder, so the firmware you flash is a *complete Marauder build with the extra
-> `pwnfriend` command added*. Flash the ESP32 **once** and you get **both**: the normal
-> Marauder GUI / companion app **and** pwnfriend — nothing about stock Marauder is removed
-> or broken. Your Flipper drives the pwnfriend brain over the same UART Marauder already uses.
+> `pwnpal` command added*. Flash the ESP32 **once** and you get **both**: the normal
+> Marauder GUI / companion app **and** pwnpal — nothing about stock Marauder is removed
+> or broken. Your Flipper drives the pwnpal brain over the same UART Marauder already uses.
 
-See [`pwnfriend/README.md`](pwnfriend/README.md), which boards work + how to flash in
+See [`pwnpal/README.md`](pwnpal/README.md), which boards work + how to flash in
 [`COMPATIBLE_HARDWARE.md`](COMPATIBLE_HARDWARE.md), the Marauder patch in
-[`pwnfriend-marauder/PATCH.md`](pwnfriend-marauder/PATCH.md), and the wire format in
-[`doc/PwnfriendProtocol.md`](doc/PwnfriendProtocol.md).
+[`pwnpal-marauder/PATCH.md`](pwnpal-marauder/PATCH.md), and the wire format in
+[`doc/PwnpalProtocol.md`](doc/PwnpalProtocol.md).
 
 ### Full pwnagotchi mode
 
@@ -51,11 +51,11 @@ Beyond just saying hi, the friend can now behave like a real pwnagotchi:
 - **scans** APs and passively **captures** WPA handshakes / PMKIDs → earns **real** pwnd,
   and reacts with pwnagotchi moods and faces.
 - **saves a crackable `.pcap` per network** on the Flipper SD
-  (`/ext/apps_data/pwnfriend/handshakes/<bssid>.pcap`, linktype 105). Each file now carries
+  (`/ext/apps_data/pwnpal/handshakes/<bssid>.pcap`, linktype 105). Each file now carries
   the network's ESSID beacon plus its EAPOL/PMKID frames → feed it straight to hcxtools /
   hashcat (mode 22000) / aircrack-ng, no manual ESSID needed.
 - **geotags** every sighting when a GPS is present (Feberis Pro) and writes a
-  **WiGLE-importable** wardrive log (`/ext/apps_data/pwnfriend/wardrive.csv`).
+  **WiGLE-importable** wardrive log (`/ext/apps_data/pwnpal/wardrive.csv`).
 - optional active **deauth** to speed a capture along.
 
 > **⚠️ Authorized use only.** Handshake/PMKID capture and deauth are only legal on Wi-Fi

@@ -8,7 +8,7 @@
 #include <datetime/datetime.h>
 #include <furi_hal_rtc.h>
 
-#define PERSONA_DIR "/ext/apps_data/pwnfriend"
+#define PERSONA_DIR "/ext/apps_data/pwnpal"
 #define PERSONA_PATH PERSONA_DIR "/persona.bin"
 
 // lonely is staleness, not peer-absence: attacked APs this epoch, caught nothing

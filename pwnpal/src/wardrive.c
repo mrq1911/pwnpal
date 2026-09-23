@@ -8,7 +8,7 @@
 
 // WiGLE 1.4 pre-header + column header, written once on file creation
 static const char* WARDRIVE_PREHEADER =
-    "WigleWifi-1.4,appRelease=pwnfriend,model=Flipper Zero,release=1.0,"
+    "WigleWifi-1.4,appRelease=pwnpal,model=Flipper Zero,release=1.0,"
     "device=esp32-marauder,display=,board=Feberis,brand=pwnagotchi-flipper\n"
     "MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,"
     "AltitudeMeters,AccuracyMeters,Type\n";
@@ -62,10 +62,10 @@ bool wardrive_log(
     if(!ssid) ssid = "";
     if(!auth) auth = "";
 
-    storage_common_mkdir(storage, PWNFRIEND_WARDRIVE_DIR); // no-op if it exists
+    storage_common_mkdir(storage, PWNPAL_WARDRIVE_DIR); // no-op if it exists
 
     File* f = storage_file_alloc(storage);
-    bool ok = storage_file_open(f, PWNFRIEND_WARDRIVE_PATH, FSAM_WRITE, FSOM_OPEN_APPEND);
+    bool ok = storage_file_open(f, PWNPAL_WARDRIVE_PATH, FSAM_WRITE, FSOM_OPEN_APPEND);
     if(ok && storage_file_size(f) == 0) {
         size_t hlen = strlen(WARDRIVE_PREHEADER);
         ok = storage_file_write(f, WARDRIVE_PREHEADER, hlen) == hlen;

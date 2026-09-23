@@ -1,8 +1,8 @@
-# Build Marauder firmware that includes the `pwnfriend` command, for every ESP32
+# Build Marauder firmware that includes the `pwnpal` command, for every ESP32
 # board you can hang off a Flipper. Each build is a COMPLETE Marauder image with the
-# extra command added — flash once, get the Marauder GUI + pwnfriend both.
+# extra command added — flash once, get the Marauder GUI + pwnpal both.
 #
-# It clones the Marauder fork, runs pwnfriend-marauder/apply_pwnfriend.py, and builds
+# It clones the Marauder fork, runs pwnpal-marauder/apply_pwnpal.py, and builds
 # with arduino-cli. On a `v*` tag it also builds the Flipper .fap and publishes a
 # GitHub Release with every board image + the fap attached.
 #
@@ -13,7 +13,7 @@
 #   devboard-pro           -> Marauder Dev Board Pro (Flipper hat), S3   (best-effort)
 # fail-fast is off, so an unsupported board never blocks the others.
 
-name: build-pwnfriend
+name: build-pwnpal
 
 on:
   workflow_dispatch:
@@ -67,9 +67,9 @@ jobs:
             fqbn: "esp32:esp32:esp32s3:PartitionScheme=min_spiffs,FlashSize=8M"
             boot_addr: "0x0"
     steps:
-      - name: Checkout pwnfriend (this repo)
+      - name: Checkout pwnpal (this repo)
         uses: actions/checkout@v4
-        with: { path: pwnfriend }
+        with: { path: pwnpal }
 
       - name: Checkout Marauder fork
         uses: actions/checkout@v4
@@ -78,8 +78,8 @@ jobs:
           ref: ${{ github.event.inputs.marauder_ref || 'feberis' }}
           path: marauder
 
-      - name: Add the pwnfriend command
-        run: python3 pwnfriend/pwnfriend-marauder/apply_pwnfriend.py marauder
+      - name: Add the pwnpal command
+        run: python3 pwnpal/pwnpal-marauder/apply_pwnpal.py marauder
 
       # Pinned libraries, straight into the sketchbook so arduino-cli finds them.
       - uses: actions/checkout@v4
@@ -150,7 +150,7 @@ jobs:
           echo "build dir: $BUILD"
           BOOT_APP0=$(find ~/.arduino15/packages/esp32/hardware/esp32/${ESP32_CORE_VER}/tools/partitions -name boot_app0.bin | head -1)
           mkdir -p out
-          esptool --chip ${{ matrix.board.chip }} merge_bin -o out/pwnfriend-${{ matrix.board.name }}.bin \
+          esptool --chip ${{ matrix.board.chip }} merge_bin -o out/pwnpal-${{ matrix.board.name }}.bin \
             ${{ matrix.board.boot_addr }} "$BUILD/esp32_marauder.ino.bootloader.bin" \
             0x8000 "$BUILD/esp32_marauder.ino.partitions.bin" \
             0xe000 "$BOOT_APP0" \
@@ -160,7 +160,7 @@ jobs:
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: pwnfriend-${{ matrix.board.name }}
+          name: pwnpal-${{ matrix.board.name }}
           path: out/*.bin
           if-no-files-found: error
 
@@ -171,17 +171,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - name: Build pwnfriend.fap (ufbt / Unleashed SDK)
+      - name: Build pwnpal.fap (ufbt / Unleashed SDK)
         run: |
           pip install --quiet ufbt
-          cd pwnfriend
+          cd pwnpal
           sh gen_version.sh
           ufbt update --index-url https://up.unleashedflip.com/directory.json --channel dev
           ufbt
       - uses: actions/upload-artifact@v4
         with:
-          name: pwnfriend-fap
-          path: pwnfriend/dist/pwnfriend.fap
+          name: pwnpal-fap
+          path: pwnpal/dist/pwnpal.fap
           if-no-files-found: error
 
   # On a v* tag: gather every board image + the fap into a GitHub Release.

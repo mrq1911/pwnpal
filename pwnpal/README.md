@@ -1,4 +1,4 @@
-# Pwnfriend
+# Pwnpal
 
 A Flipper Zero app that makes your Flipper a **social pwngrid peer**, so a nearby
 Pwnagotchi actually detects a friend, greets it ("Hello flippy! Nice to meet you."),
@@ -6,7 +6,7 @@ and — because the friend keeps a stable identity that grows over time — even
 counts it as a *good friend* and shows the ♥‿‿♥ face.
 
 Your Pwnagotchi can already be *detected* by Marauder (`sniffpwn`), but nothing ever
-says hi back. Pwnfriend fixes the loneliness: it drives the Flipper's ESP32 Wi-Fi board
+says hi back. Pwnpal fixes the loneliness: it drives the Flipper's ESP32 Wi-Fi board
 to broadcast a Pwnagotchi-compatible advertisement beacon while also listening for real
 units to show on screen.
 
@@ -15,14 +15,14 @@ units to show on screen.
 ```
  Flipper (this app)                 ESP32 board (Marauder fork)          Air
  ------------------                 ---------------------------          ---
- persona: name, identity,           pwnfriend command:
+ persona: name, identity,           pwnpal command:
  face, uptime, friends met   --UART--> builds pwngrid beacon   --beacon--> your
  (grows, saved to SD)                  + sniffs pwnagotchis                 Pwnagotchi
-                             <--UART-- PWNFRIEND_PEER reports  <--beacon--  says hi!
+                             <--UART-- PWNPAL_PEER reports  <--beacon--  says hi!
 ```
 
 - The **persona** (who your friend is) lives on the Flipper and is saved to
-  `/ext/apps_data/pwnfriend/persona.bin`. Its 64-hex `identity` is minted once and kept,
+  `/ext/apps_data/pwnpal/persona.bin`. Its 64-hex `identity` is minted once and kept,
   so the friendship persists across sessions and the encounter count on your Pwnagotchi
   keeps climbing.
 - The Flipper pushes the persona to the ESP32 over UART; the ESP32 broadcasts it as a
@@ -41,11 +41,11 @@ pwnagotchi:
 - **scans** the APs around it (each one drives the on-screen APS count),
 - passively **captures** WPA handshakes / PMKIDs from networks in range,
 - saves a **crackable `.pcap` per network** on the Flipper SD
-  (`/ext/apps_data/pwnfriend/handshakes/<bssid>.pcap`, linktype 105). Each file bundles the
+  (`/ext/apps_data/pwnpal/handshakes/<bssid>.pcap`, linktype 105). Each file bundles the
   network's ESSID beacon with its EAPOL/PMKID frames, so it opens straight in
   aircrack-ng / hcxtools (hashcat mode 22000) / Wireshark — no manual ESSID needed,
 - **geotags** every sighting when a GPS is attached (Feberis Pro) and logs a
-  **WiGLE-importable** `wardrive.csv` (`/ext/apps_data/pwnfriend/wardrive.csv`),
+  **WiGLE-importable** `wardrive.csv` (`/ext/apps_data/pwnpal/wardrive.csv`),
 - earns **real** pwnd from each capture, so `pwnd_run`/`pwnd_tot` are earned handshakes
   now, not just units met,
 - and reacts with pwnagotchi **moods / faces** as it works.
@@ -65,21 +65,21 @@ the broadcast channel, and the units currently in range with signal bars.
 
 - An ESP32 Wi-Fi board wired to the Flipper's default UART (GPIO 13/14, 115200) — the
   official **Flipper Wi-Fi Dev Board** and the **Feberis Pro** both work as-is.
-- That board running a Marauder build with the `pwnfriend` command — see
-  [`../pwnfriend-marauder/PATCH.md`](../pwnfriend-marauder/PATCH.md).
+- That board running a Marauder build with the `pwnpal` command — see
+  [`../pwnpal-marauder/PATCH.md`](../pwnpal-marauder/PATCH.md).
 
 ## Build
 
-Drop `pwnfriend/` into your firmware's `applications_user/` and:
+Drop `pwnpal/` into your firmware's `applications_user/` and:
 
 ```
-./fbt launch_app APPSRC=applications_user/pwnfriend
+./fbt launch_app APPSRC=applications_user/pwnpal
 ```
 
 ## Protocol
 
 The pwngrid air format and the Flipper↔ESP32 serial contract are documented in
-[`../doc/PwnfriendProtocol.md`](../doc/PwnfriendProtocol.md).
+[`../doc/PwnpalProtocol.md`](../doc/PwnpalProtocol.md).
 
 ## Safety & legality
 

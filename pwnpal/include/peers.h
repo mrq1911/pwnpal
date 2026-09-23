@@ -2,7 +2,7 @@
 
 #include <furi.h>
 
-// pwnagotchis this friend can currently hear (ESP32 PWNFRIEND_PEER lines).
+// pwnagotchis this friend can currently hear (ESP32 PWNPAL_PEER lines).
 #define PEER_NAME_MAX 17
 #define PEER_ID_MAX 65
 #define MAX_PEERS 8

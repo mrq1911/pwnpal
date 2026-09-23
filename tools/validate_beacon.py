@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Validate the pwnfriend beacon against what a real pwnagotchi/Marauder accepts.
+"""Validate the pwnpal beacon against what a real pwnagotchi/Marauder accepts.
 
 We can't emulate the WiFi radio, but the whole trick is the *frame*, and that we
-can check exactly. This mirrors the frame Pwnfriend.cpp::rebuild() builds and
+can check exactly. This mirrors the frame Pwnpal.cpp::rebuild() builds and
 asserts every invariant the receivers actually enforce:
 
   * pwngrid (evilsocket/pwngrid mesh/peer.go): the advertisement JSON must parse,
@@ -24,7 +24,7 @@ IE_WHISPER_PAYLOAD = 0xDE  # 222
 
 
 def build_json(name, identity, face, pwnd_run, pwnd_tot, uptime, deauth=False):
-    """Mirror of Pwnfriend.cpp::buildJson (same field order/shape). Compact so it
+    """Mirror of Pwnpal.cpp::buildJson (same field order/shape). Compact so it
     fits in a single vendor IE (<=255 bytes)."""
     return (
         '{"name":"%s","identity":"%s","version":"1.0.0",'
@@ -35,7 +35,7 @@ def build_json(name, identity, face, pwnd_run, pwnd_tot, uptime, deauth=False):
 
 
 def build_frame(payload_json, session_id):
-    """Mirror of Pwnfriend.cpp::rebuild(): 38-byte header + IE 222 + JSON."""
+    """Mirror of Pwnpal.cpp::rebuild(): 38-byte header + IE 222 + JSON."""
     header = bytes([
         0x80, 0x00,                          # frame control: mgmt / beacon
         0x00, 0x00,                          # duration

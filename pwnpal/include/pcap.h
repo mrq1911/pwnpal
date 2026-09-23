@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 // handshake pcaps, one file per target (<ssid_or_bssid>.pcap)
-#define PWNFRIEND_HS_DIR "/ext/apps_data/pwnfriend/handshakes"
+#define PWNPAL_HS_DIR "/ext/apps_data/pwnpal/handshakes"
 
 // bare 802.11, no radiotap; byte-for-byte Marauder's pcap so aircrack/hcxpcapngtool/tshark read it
 #define PCAP_LINKTYPE_IEEE802_11 105

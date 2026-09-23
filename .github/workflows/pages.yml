@@ -1,12 +1,12 @@
-# Publish the pwnfriend export tool to GitHub Pages.
-# The site is a single static page (tools/web/pwnfriend-export.html served as
+# Publish the pwnpal export tool to GitHub Pages.
+# The site is a single static page (tools/web/pwnpal-export.html served as
 # index.html) — pull captures from the Flipper, convert to hashcat 22000 + WiGLE,
 # all in the browser.
 name: pages
 
 on:
   push:
-    branches: [pwnfriend, main]
+    branches: [pwnpal, main]
     paths:
       - tools/web/**
       - .github/workflows/pages.yml
@@ -32,7 +32,7 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp tools/web/pwnfriend-export.html _site/index.html
+          cp tools/web/pwnpal-export.html _site/index.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

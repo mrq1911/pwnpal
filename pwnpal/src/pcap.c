@@ -32,10 +32,10 @@ static void pcap_record_header(uint8_t rh[16], uint32_t sec, uint32_t usec, uint
 bool pcap_append_frame(Storage* storage, const char* name, const uint8_t* frame, uint16_t len) {
     if(len == 0 || len > PCAP_SNAPLEN) return false;
     if(!name || !name[0]) name = "capture";
-    storage_common_mkdir(storage, PWNFRIEND_HS_DIR); // no-op if it exists
+    storage_common_mkdir(storage, PWNPAL_HS_DIR); // no-op if it exists
 
     char path[128];
-    snprintf(path, sizeof(path), "%s/%s.pcap", PWNFRIEND_HS_DIR, name);
+    snprintf(path, sizeof(path), "%s/%s.pcap", PWNPAL_HS_DIR, name);
 
     File* f = storage_file_alloc(storage);
     bool ok = storage_file_open(f, path, FSAM_WRITE, FSOM_OPEN_APPEND);

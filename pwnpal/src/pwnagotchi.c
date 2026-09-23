@@ -4,7 +4,7 @@
 Icons from RogueMaster at:
 https://github.com/RogueMaster/flipperzero-firmware-wPlugins/commit/8c45f8e9a921f61cda78ecdb2e58a244041d3e05
 */
-#include "pwnfriend_icons.h"
+#include "pwnpal_icons.h"
 
 #include <stdlib.h>
 #include <string.h>

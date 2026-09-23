@@ -75,7 +75,7 @@
     <input id="dir" type="file" webkitdirectory directory multiple hidden>
     <input id="files" type="file" accept=".pcap,.csv" multiple hidden>
     <div class="note" id="serialhint" style="margin:2px 0 0">⚠ Close <b>qFlipper</b> and <b>lab.flipper.net</b> first — only one app can hold the USB port, so a USB pull fails until the Flipper is disconnected from everything else.</div>
-    <div id="drop">…or drop the Flipper's <code>pwnfriend</code> folder (its <code>.pcap</code> / <code>wardrive.csv</code>) here</div>
+    <div id="drop">…or drop the Flipper's <code>pwnpal</code> folder (its <code>.pcap</code> / <code>wardrive.csv</code>) here</div>
   </div></div>
 
   <div class="row">
@@ -106,17 +106,17 @@
     (___/  \/  &lt;mrq&gt;  \___)   \___)</pre>
     <div class="note"><b>pwnflipper</b> — a friend for your lonely pwnagotchi, and a full
     pwnagotchi in its own right. The ESP32 firmware is a complete Marauder build with the
-    <code>pwnfriend</code> command added. by mrq ·
+    <code>pwnpal</code> command added. by mrq ·
     <a href="https://github.com/mrq1911/pwnagotchi-flipper">github.com/mrq1911/pwnagotchi-flipper</a></div>
   </div></div>
 
   <div class="note">
     Capture conversion runs entirely in your browser — pcaps/handshakes are never uploaded. The map
     loads tiles from OpenStreetMap, so only the map viewport (not your AP data) reaches the tile servers.
-    <br>USB pull uses Web Serial (Chrome/Edge), reading <code>/ext/apps_data/pwnfriend/</code> via the Flipper
+    <br>USB pull uses Web Serial (Chrome/Edge), reading <code>/ext/apps_data/pwnpal/</code> via the Flipper
     CLI <code>storage</code> command — close qFlipper/lab.flipper.net first (one app owns the port). No USB? Copy
-    the <code>pwnfriend</code> folder off the SD with qFlipper and drop it above.
-    <br>Crack: <code>hashcat -m 22000 pwnfriend.hc22000 &lt;wordlist&gt;</code>. Wardrive: upload the CSV at
+    the <code>pwnpal</code> folder off the SD with qFlipper and drop it above.
+    <br>Crack: <code>hashcat -m 22000 pwnpal.hc22000 &lt;wordlist&gt;</code>. Wardrive: upload the CSV at
     <code>wigle.net</code> → Uploads.
   </div>
 </main>
@@ -330,8 +330,8 @@ function render() {
   $('#resultwrap').hidden = rows.length === 0;
 
   const dl = $('#downloads'); dl.innerHTML = '';
-  if (lines.length) dl.appendChild(mkDownload('pwnfriend.hc22000', lines.join('\n') + '\n', `⬇ ${lines.length} × 22000`));
-  if (wardriveText) dl.appendChild(mkDownload('pwnfriend-wardrive.csv', wardriveText, '⬇ WiGLE CSV'));
+  if (lines.length) dl.appendChild(mkDownload('pwnpal.hc22000', lines.join('\n') + '\n', `⬇ ${lines.length} × 22000`));
+  if (wardriveText) dl.appendChild(mkDownload('pwnpal-wardrive.csv', wardriveText, '⬇ WiGLE CSV'));
 
   // crackable APs (12-hex bssids) get highlighted on the map
   const crackSet = new Set(rows.filter(r => r[3] === 'crackable').map(r => r[0]));
@@ -495,7 +495,7 @@ drop.addEventListener('drop', async e => {
 // ---------------------------------------------------------------------------
 // Web Serial pull from the Flipper CLI (storage list / read)
 // ---------------------------------------------------------------------------
-const DIR = '/ext/apps_data/pwnfriend';
+const DIR = '/ext/apps_data/pwnpal';
 let port, reader, writer;
 
 async function serialConnect() {

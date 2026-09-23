@@ -1,6 +1,6 @@
-# Adding `pwnfriend` to ESP32 Marauder
+# Adding `pwnpal` to ESP32 Marauder
 
-`Pwnfriend.{h,cpp}` are self-contained. To wire them into a Marauder build you drop
+`Pwnpal.{h,cpp}` are self-contained. To wire them into a Marauder build you drop
 both files into `esp32_marauder/` and make six small edits to existing files. Line
 numbers below are approximate (they drift between Marauder releases) — search for the
 quoted anchor text instead.
@@ -13,8 +13,8 @@ not touch any existing behaviour; `sniffpwn` etc. keep working unchanged.
 ## 0. Copy the module
 
 ```
-cp pwnfriend-marauder/Pwnfriend.h   <marauder>/esp32_marauder/
-cp pwnfriend-marauder/Pwnfriend.cpp <marauder>/esp32_marauder/
+cp pwnpal-marauder/Pwnpal.h   <marauder>/esp32_marauder/
+cp pwnpal-marauder/Pwnpal.cpp <marauder>/esp32_marauder/
 ```
 
 Marauder already vendors `ArduinoJson` and `LinkedList`, which the module uses.
@@ -26,11 +26,11 @@ Marauder already vendors `ArduinoJson` and `LinkedList`, which the module uses.
 Near the other global objects (e.g. `WiFiScan wifi_scan_obj;`), add:
 
 ```cpp
-#include "Pwnfriend.h"
-Pwnfriend pwnfriend_obj;
+#include "Pwnpal.h"
+Pwnpal pwnpal_obj;
 ```
 
-and add `extern Pwnfriend pwnfriend_obj;` wherever the other `extern ... _obj;`
+and add `extern Pwnpal pwnpal_obj;` wherever the other `extern ... _obj;`
 declarations live (typically `configs.h` or the top of `WiFiScan.cpp`).
 
 ---
@@ -40,13 +40,13 @@ declarations live (typically `configs.h` or the top of `WiFiScan.cpp`).
 Alongside `#define WIFI_SCAN_PWN 3` add an unused id, e.g.:
 
 ```cpp
-#define WIFI_SCAN_PWNFRIEND 111
+#define WIFI_SCAN_PWNPAL 111
 ```
 
 and declare the runner next to `RunPwnScan`:
 
 ```cpp
-void RunPwnfriendScan(uint8_t scan_mode, uint16_t color);
+void RunPwnpalScan(uint8_t scan_mode, uint16_t color);
 ```
 
 ---
@@ -56,10 +56,10 @@ void RunPwnfriendScan(uint8_t scan_mode, uint16_t color);
 Right after `WiFiScan::RunPwnScan`, add:
 
 ```cpp
-void WiFiScan::RunPwnfriendScan(uint8_t scan_mode, uint16_t color) {
+void WiFiScan::RunPwnpalScan(uint8_t scan_mode, uint16_t color) {
   (void)scan_mode; (void)color;
-  pwnfriend_obj.beginSession();   // clear per-session capture dedup at REAL start
-  startPcap("pwnfriend");
+  pwnpal_obj.beginSession();   // clear per-session capture dedup at REAL start
+  startPcap("pwnpal");
   esp_wifi_init(&cfg2);
   #ifdef HAS_IDF_3
     esp_wifi_set_country(&country);
@@ -86,7 +86,7 @@ fork's own `RunPwnScan`, so they resolve wherever that does.)
 
 `beginSession()` clears the per-session capture dedup tables (`_n_recon` /
 `_n_pwnd_seen`). It lives here — at real scan start — and **not** in
-`configureFromArgs()`, because the Flipper re-sends the whole `pwnfriend` command every
+`configureFromArgs()`, because the Flipper re-sends the whole `pwnpal` command every
 ~15s to refresh the persona; clearing on each refresh would re-count already-pwnd APs
 and inflate `pwnd_tot` without bound.
 
@@ -97,30 +97,30 @@ and inflate `pwnd_tot` without bound.
 Next to `else if (scan_mode == WIFI_SCAN_PWN) RunPwnScan(scan_mode, color);` add:
 
 ```cpp
-else if (scan_mode == WIFI_SCAN_PWNFRIEND)
-  RunPwnfriendScan(scan_mode, color);
+else if (scan_mode == WIFI_SCAN_PWNPAL)
+  RunPwnpalScan(scan_mode, color);
 ```
 
 ---
 
 ## 5. `WiFiScan.cpp` — sniff + broadcast in `main()`
 
-Add `WIFI_SCAN_PWNFRIEND` to the mode list at the top of `WiFiScan::main` that does the
+Add `WIFI_SCAN_PWNPAL` to the mode list at the top of `WiFiScan::main` that does the
 channel-hop block (the `if ((currentScanMode == WIFI_SCAN_PROBE) || ... )`), then hang
 the broadcast off the same tick:
 
 ```cpp
-else if (currentScanMode == WIFI_SCAN_PWNFRIEND) {
+else if (currentScanMode == WIFI_SCAN_PWNPAL) {
   if (millis() - initTime >= 500) {   // ~pwngrid signaling cadence
     initTime = millis();
-    pwnfriend_obj.broadcast();        // hops channel + sends the friend beacon
+    pwnpal_obj.broadcast();        // hops channel + sends the friend beacon
   }
 }
 ```
 
 Broadcasting itself steps the channel, so no separate `channelHop()` is needed here.
 
-Also add `WIFI_SCAN_PWNFRIEND` to the big `currentScanMode == ...` guard around line
+Also add `WIFI_SCAN_PWNPAL` to the big `currentScanMode == ...` guard around line
 2990 (the one that gates the promiscuous beacon path) and to any `scanning`/`sniffing`
 predicate you want it treated as an active scan by (so `stopscan` and the status UI see
 it). Search for `WIFI_SCAN_PWN` and mirror each occurrence.
@@ -131,13 +131,13 @@ it). Search for `WIFI_SCAN_PWN` and mirror each occurrence.
 
 In `beaconSnifferCallback`, where a matched pwngrid MAC currently calls
 `processPwnagotchiBeacon`, branch for our mode so we emit the structured
-`PWNFRIEND_PEER` line (which carries rssi + channel that `processPwnagotchiBeacon`
+`PWNPAL_PEER` line (which carries rssi + channel that `processPwnagotchiBeacon`
 doesn't have):
 
 ```cpp
 if (mac_match) {
-  if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND)
-    pwnfriend_obj.reportPeer(snifferPacket->payload, len,
+  if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL)
+    pwnpal_obj.reportPeer(snifferPacket->payload, len,
                              snifferPacket->rx_ctrl.rssi,
                              snifferPacket->rx_ctrl.channel);
   else
@@ -147,7 +147,7 @@ if (mac_match) {
 ```
 
 Make sure the outer `if ((currentScanMode == WIFI_SCAN_PROBE) || ... )` that wraps the
-mgmt-frame branch also includes `WIFI_SCAN_PWNFRIEND`, otherwise the callback returns
+mgmt-frame branch also includes `WIFI_SCAN_PWNPAL`, otherwise the callback returns
 before reaching this code.
 
 ---
@@ -166,7 +166,7 @@ if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PROBE) ||
 insert:
 
 ```cpp
-if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) &&
+if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) &&
     (type == WIFI_PKT_DATA)) {
   #ifdef HAS_GPS
     bool pf_fix = gps_obj.getFixStatus();
@@ -175,7 +175,7 @@ if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) &&
   #else
     bool pf_fix = false; double pf_lat = 0.0; double pf_lon = 0.0;
   #endif
-  if (pwnfriend_obj.reportHandshake(snifferPacket->payload, len,
+  if (pwnpal_obj.reportHandshake(snifferPacket->payload, len,
                                     snifferPacket->rx_ctrl.rssi,
                                     snifferPacket->rx_ctrl.channel,
                                     pf_fix, pf_lat, pf_lon))
@@ -187,9 +187,9 @@ if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) &&
 `len` here is still `rx_ctrl.sig_len` (the mgmt path decrements it by 4 only inside the
 `WIFI_PKT_MGMT` block), so DATA frames get their full length. `reportHandshake` detects
 an EAPOL M2 (→ `type:"handshake"`) or an RSN PMKID KDE in M1 (→ `type:"pmkid"`), dedups
-per BSSID for the session, and emits `PWNFRIEND_PWND` (geotagged with `lat`/`lon` when
+per BSSID for the session, and emits `PWNPAL_PWND` (geotagged with `lat`/`lon` when
 the GPS has a fix). It also streams the full frame to the Flipper as a **self-describing**
-`PWNFRIEND_HS <bssid12hex> <framehex>` line — the BSSID is derived from the frame's DS
+`PWNPAL_HS <bssid12hex> <framehex>` line — the BSSID is derived from the frame's DS
 bits and prefixed so the Flipper files the frame under the right per-BSSID pcap without
 depending on a preceding `PWND` (protocol v2; raw binary would trip the serial CLI's
 CR/XON handling, so we stream lowercase hex). It returns true for **any** EAPOL frame so
@@ -211,7 +211,7 @@ if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWN) {
 insert:
 
 ```cpp
-if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) {
+if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) {
   #ifdef HAS_GPS
     bool pf_fix = gps_obj.getFixStatus();
     double pf_lat = pf_fix ? atof(gps_obj.getLat().c_str()) : 0.0;
@@ -219,7 +219,7 @@ if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) {
   #else
     bool pf_fix = false; double pf_lat = 0.0; double pf_lon = 0.0;
   #endif
-  if (pwnfriend_obj.reportAP(snifferPacket->payload, len,
+  if (pwnpal_obj.reportAP(snifferPacket->payload, len,
                              snifferPacket->rx_ctrl.rssi,
                              snifferPacket->rx_ctrl.channel,
                              pf_fix, pf_lat, pf_lon))
@@ -229,10 +229,10 @@ if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) {
 ```
 
 `len` here is already FCS-stripped (`-4`), fine for SSID parsing. `reportAP` dedups each
-non-pwngrid AP into one `PWNFRIEND_AP` line per BSSID (geotagged with `lat`/`lon` when
+non-pwngrid AP into one `PWNPAL_AP` line per BSSID (geotagged with `lat`/`lon` when
 the GPS has a fix) and stores it (BSSID + ESSID + channel) so the deauth tick and the
-`PWNFRIEND_PWND` SSID lookup have it. On the **first** beacon per BSSID it also streams
-that beacon to the Flipper as a `PWNFRIEND_HS <bssid> <framehex>` line, so the per-BSSID
+`PWNPAL_PWND` SSID lookup have it. On the **first** beacon per BSSID it also streams
+that beacon to the Flipper as a `PWNPAL_HS <bssid> <framehex>` line, so the per-BSSID
 pcap contains the ESSID-bearing beacon (a mandatory WPA 22000 field) and is actually
 crackable. The stored channel + ESSID are also what the `-deauth` opt-in ("active mode")
 uses: on each throttled burst `broadcast()` walks the recon'd APs on the channel it is
@@ -249,32 +249,32 @@ handshake — pwnagotchi's `associate` + `deauth` halves (agent.py), gated on th
 In `CommandLine.h`, next to `SNIFF_PWN_CMD`:
 
 ```cpp
-const char PROGMEM PWNFRIEND_CMD[] = "pwnfriend";
+const char PROGMEM PWNPAL_CMD[] = "pwnpal";
 ```
 
 In `CommandLine.cpp`'s command dispatch (next to the `SNIFF_PWN_CMD` handler):
 
 ```cpp
-else if (cmd_args.get(0) == PWNFRIEND_CMD) {
-  if (!pwnfriend_obj.configureFromArgs(&cmd_args)) {
-    Serial.println(F("PWNFRIEND_ERR bad -id (need 64 hex)"));
-  } else if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNFRIEND) {
+else if (cmd_args.get(0) == PWNPAL_CMD) {
+  if (!pwnpal_obj.configureFromArgs(&cmd_args)) {
+    Serial.println(F("PWNPAL_ERR bad -id (need 64 hex)"));
+  } else if (wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) {
     // Already running: configureFromArgs() already refreshed + rebuilt the persona.
     // Do NOT StartScan again — that would tear down/re-init WiFi, wipe recon, and
     // reset the channel hop. The ~15s command re-send is only a live persona update.
-    Serial.println(F("pwnfriend persona updated"));
+    Serial.println(F("pwnpal persona updated"));
   } else {
-    Serial.print(F("Starting pwnfriend. Stop with "));
+    Serial.print(F("Starting pwnpal. Stop with "));
     Serial.println(STOPSCAN_CMD);
-    wifi_scan_obj.StartScan(WIFI_SCAN_PWNFRIEND, TFT_MAGENTA);
+    wifi_scan_obj.StartScan(WIFI_SCAN_PWNPAL, TFT_MAGENTA);
   }
 }
 ```
 
-The `currentScanMode == WIFI_SCAN_PWNFRIEND` branch is what keeps the recon table, the
+The `currentScanMode == WIFI_SCAN_PWNPAL` branch is what keeps the recon table, the
 capture dedup, and the channel-hop state alive across the Flipper's 15s command re-sends
-— only the very first `pwnfriend` command starts a scan; later ones just update the
-persona. Add `#include "Pwnfriend.h"` and `extern Pwnfriend pwnfriend_obj;` at the top of
+— only the very first `pwnpal` command starts a scan; later ones just update the
+persona. Add `#include "Pwnpal.h"` and `extern Pwnpal pwnpal_obj;` at the top of
 `CommandLine.cpp` if not already visible.
 
 ---
@@ -284,11 +284,11 @@ persona. Add `#include "Pwnfriend.h"` and `extern Pwnfriend pwnfriend_obj;` at t
 Over the board's serial CLI at 115200:
 
 ```
-pwnfriend -n lonelybot -id 3b1e9f...<64 hex>...2a -f 21 -pr 0 -pt 7 -u 3600
+pwnpal -n lonelybot -id 3b1e9f...<64 hex>...2a -f 21 -pr 0 -pt 7 -u 3600
 ```
 
 Your Pwnagotchi should, within a hop cycle or two, flip to a friendly face and announce
 "Hello lonelybot! Nice to meet you." Stop with `stopscan`.
 
-The Flipper `pwnfriend` app drives exactly this command for you and manages the persona,
+The Flipper `pwnpal` app drives exactly this command for you and manages the persona,
 so you normally never type it by hand.

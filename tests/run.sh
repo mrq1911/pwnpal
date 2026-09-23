@@ -7,7 +7,7 @@ cd "$HERE"
 CXX="${CXX:-g++}"
 fail=0
 for src in test_*.cpp; do
-    bin="/tmp/pwnfriend-${src%.cpp}"
+    bin="/tmp/pwnpal-${src%.cpp}"
     echo "=== $src ==="
     "$CXX" -std=c++17 -Wall -Wextra -Werror -O1 "$src" -o "$bin"
     "$bin" || fail=1

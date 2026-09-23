@@ -1,5 +1,5 @@
 // pure geo/identity helpers — no Flipper/Furi deps, so host-testable (tests/test_geo.cpp).
-// anything touching the model/SDK stays in pwnfriend_app.c.
+// anything touching the model/SDK stays in pwnpal_app.c.
 #pragma once
 #include <math.h>
 #include <stdbool.h>

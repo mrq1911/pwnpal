@@ -1,6 +1,6 @@
-# Pwnfriend Protocol
+# Pwnpal Protocol
 
-Pwnfriend makes the Flipper Zero act as a social **pwngrid** peer so that a nearby
+Pwnpal makes the Flipper Zero act as a social **pwngrid** peer so that a nearby
 Pwnagotchi detects it, greets it ("Hello friend! Nice to meet you."), and — because the
 friend keeps a stable identity — counts encounters over time and promotes it to a
 "good friend" with the ♥‿‿♥ face.
@@ -114,12 +114,12 @@ GPIO 13 TX / 14 RX) — the same link Marauder's CLI already uses, so it works o
 official Wi-Fi Dev Board and on the Feberis Pro without rewiring.
 
 Commands are newline-terminated ASCII lines, matching Marauder's CLI parser
-(`CommandLine.cpp`). Pwnfriend adds one command.
+(`CommandLine.cpp`). Pwnpal adds one command.
 
 ### Flipper → ESP32
 
 ```
-pwnfriend -n <name> -id <64hex> -f <faceIdx> -pr <pwnd_run> -pt <pwnd_tot> -u <uptime> -e <epoch> [-ch <n>] [-deauth]
+pwnpal -n <name> -id <64hex> -f <faceIdx> -pr <pwnd_run> -pt <pwnd_tot> -u <uptime> -e <epoch> [-ch <n>] [-deauth]
 ```
 
 - `-n`   persona name (no spaces; use `_`, rendered back to space by the app if desired)
@@ -148,13 +148,13 @@ The ESP32 emits one line per detected Pwnagotchi, prefixed so the Flipper can fi
 out of Marauder's other chatter:
 
 ```
-PWNFRIEND_PEER {"name":"kitty","identity":"<hex-or-empty>","pwnd_tot":42,"pwnd_run":3,"uptime":1234,"rssi":-55,"channel":6,"deauth":false}
+PWNPAL_PEER {"name":"kitty","identity":"<hex-or-empty>","pwnd_tot":42,"pwnd_run":3,"uptime":1234,"rssi":-55,"channel":6,"deauth":false}
 ```
 
 and a heartbeat when broadcasting is (re)confirmed:
 
 ```
-PWNFRIEND_ADV name=flippy ch=6 sent=128
+PWNPAL_ADV name=flippy ch=6 sent=128
 ```
 
 In full pwnagotchi mode the ESP32 also scans APs and captures handshakes, and reports
@@ -165,29 +165,29 @@ capturable targets), deduped per BSSID. `lat`/`lon` are appended only when the G
 fix — see [§5 GPS geotagging](#5-gps-geotagging--wardrive-log):
 
 ```
-PWNFRIEND_AP {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"NAME","channel":6,"rssi":-61[,"lat":48.208,"lon":16.373]}
+PWNPAL_AP {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"NAME","channel":6,"rssi":-61[,"lat":48.208,"lon":16.373]}
 ```
 
 For the first beacon of each BSSID, `reportAP()` **also** streams that beacon as a
-`PWNFRIEND_HS` line (below). That is what puts the ESSID-bearing beacon into the network's
+`PWNPAL_HS` line (below). That is what puts the ESSID-bearing beacon into the network's
 pcap and makes it actually crackable.
 
 A captured handshake / PMKID — the friend's **earned pwnd**, deduped per BSSID per
 session; `lat`/`lon` again appended only on a GPS fix:
 
 ```
-PWNFRIEND_PWND {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"NAME","type":"handshake","channel":6,"rssi":-61[,"lat":48.208,"lon":16.373]}
+PWNPAL_PWND {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"NAME","type":"handshake","channel":6,"rssi":-61[,"lat":48.208,"lon":16.373]}
 ```
 
 `type` is `handshake` for an EAPOL M2, or `pmkid` for an RSN PMKID from M1. `ssid` is
-sanitized the same way as `PWNFRIEND_PEER` names and may be `""` for a hidden AP. The
+sanitized the same way as `PWNPAL_PEER` names and may be `""` for a hidden AP. The
 
 **Miss (active mode only)** — after the ESP32 has assoc/deauth'd an AP `MISS_ATTEMPTS`
 (4) times with no capture, it emits a single line so the brain can flash the demotivated
 face (pwnagotchi's `on_miss`):
 
 ```
-PWNFRIEND_MISS aa:bb:cc:dd:ee:ff
+PWNPAL_MISS aa:bb:cc:dd:ee:ff
 ```
 
 Flipper de-dupes both AP and capture lines by `bssid` across the whole app session, so the
@@ -199,12 +199,12 @@ crackable pcap — one frame per line, **self-describing**: the BSSID as 12 lowe
 chars with no colons, a space, then the full frame as lowercase hex:
 
 ```
-PWNFRIEND_HS <bssid12hex> <lowercase-hex-of-the-full-802.11-frame>
+PWNPAL_HS <bssid12hex> <lowercase-hex-of-the-full-802.11-frame>
 ```
 
-e.g. `PWNFRIEND_HS aabbccddeeff 8000000000...`. The Flipper files the frame into
+e.g. `PWNPAL_HS aabbccddeeff 8000000000...`. The Flipper files the frame into
 `<bssid>.pcap` by parsing the BSSID on **this** line — it no longer depends on a preceding
-`PWNFRIEND_PWND` to know the target. This matters because most EAPOL frames (M1/M3/M4 and
+`PWNPAL_PWND` to know the target. This matters because most EAPOL frames (M1/M3/M4 and
 PMKID) never produce a `PWND`, and lines from the rx-callback can arrive out of order; a
 self-describing HS line can't be misfiled under the wrong (or the default) pcap.
 
@@ -213,8 +213,8 @@ is line-safe and self-synchronising on the `\n` boundary. Only beacons (one per 
 EAPOL / PMKID frames are streamed (never bulk data), so a line stays small. See
 [§4 Safety & authorization](#4-safety--authorization) for the pcap format and location.
 
-Lines are `\n`-terminated. Any line not starting with `PWNFRIEND_` is ordinary Marauder
-output and the app ignores it. **Each `PWNFRIEND_*` line is emitted as one atomic
+Lines are `\n`-terminated. Any line not starting with `PWNPAL_` is ordinary Marauder
+output and the app ignores it. **Each `PWNPAL_*` line is emitted as one atomic
 `Serial.write`** of a fully built buffer (line + trailing `\n`): the WiFi rx-callback task
 and the main loop both print, and a byte-at-a-time write would let their lines interleave
 and garble.
@@ -249,7 +249,7 @@ a beacon and listens. Capture and deauth are **opt-in and off by default on both
 - The Flipper app stays in presence-only mode until you explicitly enable capture. Deauth
   is a further, separate opt-in that resets to off every launch; it is only meaningful
   with capture on, and requires its own confirmation.
-- `-deauth` is **only appended to the `pwnfriend` command when the user has turned deauth
+- `-deauth` is **only appended to the `pwnpal` command when the user has turned deauth
   on**. Absent = passive only, which is the default. There is no default-on path to
   transmitting a deauth.
 - Whenever deauth is active the advertised `policy.deauth` is `true`; the friend never
@@ -261,17 +261,17 @@ a beacon and listens. Capture and deauth are **opt-in and off by default on both
 
 ### pcap output
 
-Frames streamed via `PWNFRIEND_HS` are hex-decoded on the Flipper and appended to a
+Frames streamed via `PWNPAL_HS` are hex-decoded on the Flipper and appended to a
 standard libpcap file — **linktype 105 (LINKTYPE_IEEE802_11**, bare 802.11, matching
 Marauder's own pcap byte-for-byte), so aircrack-ng, `hcxpcapngtool` and Wireshark read it
 directly. There is **one pcap per network, named by BSSID**, on the Flipper SD:
 
 ```
-/ext/apps_data/pwnfriend/handshakes/<bssid>.pcap
+/ext/apps_data/pwnpal/handshakes/<bssid>.pcap
 ```
 
 Because `reportAP()` streams the first beacon of each BSSID and every capture's
-`PWNFRIEND_HS` line carries its own BSSID, each file holds that network's ESSID-bearing
+`PWNPAL_HS` line carries its own BSSID, each file holds that network's ESSID-bearing
 beacon **plus** its EAPOL/PMKID frames. That makes it directly crackable — feed it to
 `hcxpcapngtool` → hashcat mode 22000 (or aircrack-ng) with no manual `-e`/ESSID needed,
 because the ESSID is a mandatory 22000 field and now lives in the file.
@@ -285,11 +285,11 @@ captured frame; the file stays valid even if the board is yanked mid-capture.
 
 Boards with a GPS (the **Feberis Pro**) geotag what they see. The ESP32 reads Marauder's
 global `gps_obj` and, **only when it reports a fix**, appends `lat`/`lon` (decimal-degree
-floats) to the JSON of each `PWNFRIEND_AP` and `PWNFRIEND_PWND` line:
+floats) to the JSON of each `PWNPAL_AP` and `PWNPAL_PWND` line:
 
 ```
-PWNFRIEND_AP   {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"NAME","channel":6,"rssi":-61,"lat":48.208,"lon":16.373}
-PWNFRIEND_PWND {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"NAME","type":"handshake","channel":6,"rssi":-61,"lat":48.208,"lon":16.373}
+PWNPAL_AP   {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"NAME","channel":6,"rssi":-61,"lat":48.208,"lon":16.373}
+PWNPAL_PWND {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"NAME","type":"handshake","channel":6,"rssi":-61,"lat":48.208,"lon":16.373}
 ```
 
 With **no fix, both keys are omitted entirely** — never sent as `0` or `null`. All GPS
@@ -299,7 +299,7 @@ unchanged and simply never emit `lat`/`lon`.
 The Flipper turns every geotagged line into a **WiGLE-importable** wardrive CSV on its SD:
 
 ```
-/ext/apps_data/pwnfriend/wardrive.csv
+/ext/apps_data/pwnpal/wardrive.csv
 ```
 
 A WiGLE pre-header line, then the column header, then one `WIFI` row per geotagged AP (and
@@ -307,7 +307,7 @@ optionally per capture). Rows without lat/lon are **skipped** — only geotagged
 are logged:
 
 ```
-WigleWifi-1.4,appRelease=pwnfriend,model=flipper,release=1.0,device=pwnfriend,display=,board=esp32,brand=marauder
+WigleWifi-1.4,appRelease=pwnpal,model=flipper,release=1.0,device=pwnpal,display=,board=esp32,brand=marauder
 MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type
 aa:bb:cc:dd:ee:ff,NAME,[WPA2],2026-09-19 12:00:00,6,-61,48.208,16.373,140.0,5.0,WIFI
 ```

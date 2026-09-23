@@ -5,7 +5,7 @@
 #include <furi_hal_rtc.h>
 
 // same data dir as the persona; created lazily on record
-#define CONSENT_DIR "/ext/apps_data/pwnfriend"
+#define CONSENT_DIR "/ext/apps_data/pwnpal"
 
 static uint64_t consent_now_unix(void) {
     DateTime dt;
@@ -18,12 +18,12 @@ bool consent_is_given(void) {
     File* file = storage_file_alloc(storage);
     bool given = false;
 
-    if(storage_file_open(file, PWNFRIEND_CONSENT_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
-        PwnfriendConsent c;
+    if(storage_file_open(file, PWNPAL_CONSENT_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        PwnpalConsent c;
         uint16_t read = storage_file_read(file, &c, sizeof(c));
         given =
-            (read == sizeof(c) && c.magic == PWNFRIEND_CONSENT_MAGIC &&
-             c.version == PWNFRIEND_CONSENT_VERSION);
+            (read == sizeof(c) && c.magic == PWNPAL_CONSENT_MAGIC &&
+             c.version == PWNPAL_CONSENT_VERSION);
     }
     storage_file_close(file);
     storage_file_free(file);
@@ -36,10 +36,10 @@ void consent_record(void) {
     storage_common_mkdir(storage, CONSENT_DIR);
 
     File* file = storage_file_alloc(storage);
-    if(storage_file_open(file, PWNFRIEND_CONSENT_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
-        PwnfriendConsent c = {
-            .magic = PWNFRIEND_CONSENT_MAGIC,
-            .version = PWNFRIEND_CONSENT_VERSION,
+    if(storage_file_open(file, PWNPAL_CONSENT_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        PwnpalConsent c = {
+            .magic = PWNPAL_CONSENT_MAGIC,
+            .version = PWNPAL_CONSENT_VERSION,
             .accepted_unix = consent_now_unix(),
         };
         storage_file_write(file, &c, sizeof(c));

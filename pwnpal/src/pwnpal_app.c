@@ -222,6 +222,7 @@ typedef struct {
     uint8_t ap_pcap_flags[AP_MAX]; // per-session APF_* bits: HS filed / ESSID beacon spliced
     uint8_t ap_clients[AP_MAX]; // associated clients the ESP tracks for this AP (live, fw>=6)
     uint8_t ap_attacks[AP_MAX]; // assoc/deauth bursts the ESP aimed at this AP (live, fw>=6)
+    uint8_t ap_decloaked[AP_MAX]; // hidden ESSID recovered via de-cloak this session (list "D" mark)
 
     // every friend met (the browser reads this; persisted)
     FriendRec friends[FRIEND_MAX];
@@ -735,6 +736,7 @@ static int ap_get(PwnpalModel* model, const char* key, bool* is_new) {
     model->ap_pcap_flags[i] = 0; // recycled slot: fresh pcap bookkeeping
     model->ap_clients[i] = 0; // recycled slot: fresh client/attack counters
     model->ap_attacks[i] = 0;
+    model->ap_decloaked[i] = 0;
     model->aps[i].lat = 1e9f; // no location until a geotagged line arrives
     model->aps[i].lon = 1e9f;
     model->aps[i].loc_rssi = -128; // reset for a recycled slot
@@ -1188,6 +1190,8 @@ static void pwnpal_handle_ap_line(PwnpalApp* app, const char* line) {
     line_extract_str(line, "\"ssid\":\"", ssid, sizeof(ssid));
     line_extract_int(line, "\"channel\":", &channel);
     line_extract_int(line, "\"rssi\":", &rssi);
+    int dc = 0;
+    line_extract_int(line, "\"dc\":", &dc); // de-cloak: hidden ESSID recovered from a client
     bool have_gps = line_extract_number(line, "\"lat\":", lat, sizeof(lat)) &&
                     line_extract_number(line, "\"lon\":", lon, sizeof(lon)) && coord_ok(lat, lon);
 
@@ -1195,6 +1199,7 @@ static void pwnpal_handle_ap_line(PwnpalApp* app, const char* line) {
     bssid_key(key, bssid);
 
     bool is_new_ap = false;
+    bool log_decloak = false;
     bool do_track = false;
     bool inject = false;
     char beac_ssid[33] = {0};
@@ -1212,6 +1217,10 @@ static void pwnpal_handle_ap_line(PwnpalApp* app, const char* line) {
                 ApRec* a = &model->aps[ai];
                 a->channel = (int16_t)channel;
                 a->rssi = (int16_t)rssi;
+                if(dc && !model->ap_decloaked[ai]) { // first de-cloak of this AP -> mark + log
+                    model->ap_decloaked[ai] = 1;
+                    log_decloak = true;
+                }
                 if(ssid[0]) {
                     strncpy(a->ssid, ssid, sizeof(a->ssid) - 1);
                     a->ssid[sizeof(a->ssid) - 1] = '\0';
@@ -1266,6 +1275,27 @@ static void pwnpal_handle_ap_line(PwnpalApp* app, const char* line) {
     // one wardrive row per first-seen BSSID (resume replay won't rewrite); encryption unknown from a beacon
     if(have_gps && is_new_ap) {
         wardrive_log(app->storage, bssid, ssid, "[ESS]", channel, rssi, lat, lon);
+    }
+
+    // de-cloak event log: who got un-hidden (bssid + recovered ssid + where), for attribution
+    if(log_decloak) {
+        storage_common_mkdir(app->storage, "/ext/apps_data/pwnpal");
+        File* f = storage_file_alloc(app->storage);
+        if(storage_file_open(f, "/ext/apps_data/pwnpal/decloak.csv", FSAM_WRITE, FSOM_OPEN_APPEND)) {
+            if(storage_file_size(f) == 0) {
+                const char* h = "uptime_s,bssid,ssid,channel,rssi,lat,lon\n";
+                storage_file_write(f, h, strlen(h));
+            }
+            char qs[70];
+            csv_quote(ssid, qs, sizeof(qs));
+            char row[160];
+            snprintf(
+                row, sizeof(row), "%lu,%s,%s,%d,%d,%s,%s\n", (unsigned long)up, bssid, qs, channel,
+                rssi, lat, lon);
+            storage_file_write(f, row, strlen(row));
+        }
+        storage_file_close(f);
+        storage_file_free(f);
     }
 
     // throttled per-sighting track row; many spots per BSSID = a triangulation set
@@ -2128,6 +2158,8 @@ static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
             canvas_draw_str(canvas, marker_x, y, "T");
         else if(a->whitelisted)
             canvas_draw_str(canvas, marker_x, y, "I");
+        else if(model->ap_decloaked[apidx])
+            canvas_draw_str(canvas, marker_x, y, "D"); // hidden ESSID recovered via de-cloak
         canvas_draw_str(canvas, fx, y, right);
         if(sel) canvas_set_color(canvas, ColorBlack);
     }

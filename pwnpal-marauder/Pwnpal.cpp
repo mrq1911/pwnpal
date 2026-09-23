@@ -1127,8 +1127,10 @@ void Pwnpal::reportDecloak(const uint8_t* payload, int length, int rssi, int cha
     char geo[48];
     fmt_geo(geo, sizeof(geo), has_fix, lat, lon);
     char line[256];
+    // "dc":1 marks this as a de-cloak (hidden ESSID recovered from a client) so the Flipper can
+    // flag the AP in the browser + log who was de-cloaked, vs an ordinary late-beacon name.
     int n = snprintf(line, sizeof(line),
-        "PWNPAL_AP {\"bssid\":\"%s\",\"ssid\":\"%s\",\"channel\":%d,\"rssi\":%d%s}\n",
+        "PWNPAL_AP {\"bssid\":\"%s\",\"ssid\":\"%s\",\"channel\":%d,\"rssi\":%d%s,\"dc\":1}\n",
         mac, ssid, channel, rssi, geo);
     if (n > 0)
         Serial.write((const uint8_t*)line,

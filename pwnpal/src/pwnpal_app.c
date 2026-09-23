@@ -1371,7 +1371,7 @@ static void pwnpal_handle_miss_line(PwnpalApp* app, const char* line) {
 // "PWNPAL_EPOCH {...}" — dev telemetry (fw v4): one CSV row per epoch for offline tuning
 static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
     int n = 0, recon = 0, att = 0, chans = 0, assoc = 0, deauth = 0, uni = 0, sta = 0, hs = 0,
-        pmkid = 0, miss = 0, dpmf = 0, dnocli = 0;
+        pmkid = 0, miss = 0, dpmf = 0, dnocli = 0, dcloak = 0;
     line_extract_int(line, "\"n\":", &n);
     line_extract_int(line, "\"recon\":", &recon);
     line_extract_int(line, "\"attackable\":", &att);
@@ -1385,6 +1385,7 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
     line_extract_int(line, "\"miss\":", &miss);
     line_extract_int(line, "\"dpmf\":", &dpmf); // deauths skipped: PMF-protected
     line_extract_int(line, "\"dnocli\":", &dnocli); // deauths skipped: no client
+    line_extract_int(line, "\"dcloak\":", &dcloak); // hidden APs de-cloaked (ESSID recovered)
 
     uint32_t up = 0;
     char lat[16], lon[16];
@@ -1405,14 +1406,14 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
         if(storage_file_size(f) == 0) {
             const char* h =
                 "uptime_s,lat,lon,epoch,recon,attackable,chans,assoc,deauth,unicast,sta,hs,pmkid,"
-                "miss,dpmf,dnocli\n";
+                "miss,dpmf,dnocli,dcloak\n";
             storage_file_write(f, h, strlen(h));
         }
         char row[200];
         snprintf(
-            row, sizeof(row), "%lu,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+            row, sizeof(row), "%lu,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
             (unsigned long)up, lat, lon, n, recon, att, chans, assoc, deauth, uni, sta, hs, pmkid,
-            miss, dpmf, dnocli);
+            miss, dpmf, dnocli, dcloak);
         storage_file_write(f, row, strlen(row));
     }
     storage_file_close(f);

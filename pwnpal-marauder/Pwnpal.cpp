@@ -230,7 +230,7 @@ void Pwnpal::reset() {
     _epoch_pwnd = false;
     _epoch_seq = 0;
     _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = 0;
-    _ep_dpmf = _ep_dnocli = 0;
+    _ep_dpmf = _ep_dnocli = _ep_dcloak = 0;
     _last_deauth_ms = 0;
     _cur_dwell_ms = HOP_RECON_TIME_MS;
     _attack_min_rssi = DEFAULT_ATTACK_MIN_RSSI;
@@ -264,13 +264,14 @@ void Pwnpal::endEpoch(uint32_t now) {
     int n = snprintf(line, sizeof(line),
         "PWNPAL_EPOCH {\"n\":%lu,\"recon\":%d,\"attackable\":%d,\"chans\":%d,\"assoc\":%u,"
         "\"deauth\":%u,\"unicast\":%u,\"sta\":%d,\"hs\":%u,\"pmkid\":%u,\"miss\":%u,"
-        "\"dpmf\":%u,\"dnocli\":%u}\n",
+        "\"dpmf\":%u,\"dnocli\":%u,\"dcloak\":%u}\n",
         (unsigned long)_epoch_seq, _n_recon, attackable_n, _n_attack, (unsigned)_ep_assoc,
         (unsigned)_ep_deauth, (unsigned)_ep_unicast, _n_sta, (unsigned)_ep_hs,
-        (unsigned)_ep_pmkid, (unsigned)_ep_miss, (unsigned)_ep_dpmf, (unsigned)_ep_dnocli);
+        (unsigned)_ep_pmkid, (unsigned)_ep_miss, (unsigned)_ep_dpmf, (unsigned)_ep_dnocli,
+        (unsigned)_ep_dcloak);
     if (n > 0) Serial.write((const uint8_t*)line, (size_t)(n >= (int)sizeof(line) ? sizeof(line) - 1 : n));
     _epoch_seq++;
-    _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = 0;
+    _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = _ep_dcloak = 0;
 
     if (_epoch_pwnd) _inactive_epochs = 0;
     else if (_inactive_epochs < 255) _inactive_epochs++;
@@ -1119,6 +1120,7 @@ void Pwnpal::reportDecloak(const uint8_t* payload, int length, int rssi, int cha
     if (!ssid[0]) return;
     strncpy(_recon[ri].ssid, ssid, sizeof(_recon[ri].ssid) - 1);
     _recon[ri].ssid[sizeof(_recon[ri].ssid) - 1] = '\0';
+    _ep_dcloak++;                                          // telemetry: a hidden AP named this epoch
     has_fix = geoResolve(has_fix, &lat, &lon);
     char mac[18];
     fmt_mac(mac, bssid);

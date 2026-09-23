@@ -90,7 +90,7 @@ class Pwnpal {
         _epoch_pwnd = false;
         _epoch_seq = 0;
         _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = 0;
-        _ep_dpmf = _ep_dnocli = 0;
+        _ep_dpmf = _ep_dnocli = _ep_dcloak = 0;
         _saver_idle = false;       // duty-cycle state; _saver level itself is kept (set by args)
         _saver_phase_ms = 0;
         _saver_hb_ms = 0;
@@ -171,6 +171,7 @@ class Pwnpal {
     uint16_t _ep_assoc, _ep_deauth, _ep_unicast; // frames fired this epoch
     uint16_t _ep_hs, _ep_pmkid, _ep_miss;        // outcomes this epoch
     uint16_t _ep_dpmf, _ep_dnocli;               // deauths skipped: PMF-protected / no client
+    uint16_t _ep_dcloak;                          // hidden APs de-cloaked (ESSID recovered) this epoch
 
     // targeting + whitelist. target set -> only that BSSID attacked; whitelisted BSSIDs
     // never attacked (still recon'd).

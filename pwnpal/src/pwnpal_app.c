@@ -1148,8 +1148,8 @@ static int build_synth_beacon(uint8_t* b, const char* bssidhex, const char* ssid
 // AP (fw v3; clients/attacks appended in fw v6, absent on older builds)
 static void pwnpal_handle_rssi_line(PwnpalApp* app, const char* line) {
     char key[13];
-    bssid_key(key, line + 15); // hex of the mac, colons skipped, stops at 12
-    const char* sp = strchr(line + 15, ' ');
+    bssid_key(key, line + 12); // hex of the mac, colons skipped, stops at 12
+    const char* sp = strchr(line + 12, ' ');
     if(!sp) return;
     int rssi = (int)strtol(sp + 1, NULL, 10);
     int clients = -1, attacks = -1; // -1 = not reported (old fw) -> leave the stored value alone
@@ -1289,7 +1289,7 @@ static void pwnpal_handle_ap_line(PwnpalApp* app, const char* line) {
 static void pwnpal_handle_hs_line(PwnpalApp* app, const char* line) {
     // "PWNPAL_HS <bssid12hex> <hex-of-full-802.11-frame>"; the bssid names the per-target
     // pcap so beacon + EAPOL share one crackable <bssid>.pcap without needing a preceding PWND.
-    const char* p = line + 13; // past "PWNPAL_HS "
+    const char* p = line + 10; // past "PWNPAL_HS "
 
     // Parse exactly 12 hex chars for the bssid, then require the space separator.
     char bssid[13];
@@ -1351,7 +1351,7 @@ static void pwnpal_handle_miss_line(PwnpalApp* app, const char* line) {
     // on_miss: firmware attacked with no capture -> demotivated face + miss tally, mark the AP.
     // gated on capture armed so a stray MISS can't skew the mood.
     char key[13];
-    bssid_key(key, line + 15); // past "PWNPAL_MISS "
+    bssid_key(key, line + 12); // past "PWNPAL_MISS "
     with_view_model(
         app->view,
         PwnpalModel * model,
@@ -1465,27 +1465,27 @@ static void pwnpal_handle_gps_line(PwnpalApp* app, const char* line) {
 
 static void pwnpal_process_line(PwnpalApp* app, const char* line) {
     // PWND and PEER share the PWNPAL_P prefix, so compare both fully
-    if(strncmp(line, "PWNPAL_PEER ", 15) == 0) {
+    if(strncmp(line, "PWNPAL_PEER ", 12) == 0) {
         pwnpal_handle_peer_line(app, line);
-    } else if(strncmp(line, "PWNPAL_PWND ", 15) == 0) {
+    } else if(strncmp(line, "PWNPAL_PWND ", 12) == 0) {
         pwnpal_handle_pwnd_line(app, line);
-    } else if(strncmp(line, "PWNPAL_HS ", 13) == 0) {
+    } else if(strncmp(line, "PWNPAL_HS ", 10) == 0) {
         pwnpal_handle_hs_line(app, line);
-    } else if(strncmp(line, "PWNPAL_AP ", 13) == 0) {
+    } else if(strncmp(line, "PWNPAL_AP ", 10) == 0) {
         pwnpal_handle_ap_line(app, line);
-    } else if(strncmp(line, "PWNPAL_RSSI ", 15) == 0) {
+    } else if(strncmp(line, "PWNPAL_RSSI ", 12) == 0) {
         pwnpal_handle_rssi_line(app, line);
-    } else if(strncmp(line, "PWNPAL_EPOCH ", 16) == 0) {
+    } else if(strncmp(line, "PWNPAL_EPOCH ", 13) == 0) {
         pwnpal_handle_epoch_line(app, line);
-    } else if(strncmp(line, "PWNPAL_GPS ", 14) == 0) {
+    } else if(strncmp(line, "PWNPAL_GPS ", 11) == 0) {
         pwnpal_handle_gps_line(app, line);
-    } else if(strncmp(line, "PWNPAL_ADV ", 14) == 0) {
+    } else if(strncmp(line, "PWNPAL_ADV ", 11) == 0) {
         pwnpal_handle_adv_line(app, line);
-    } else if(strncmp(line, "PWNPAL_MISS ", 15) == 0) {
+    } else if(strncmp(line, "PWNPAL_MISS ", 12) == 0) {
         pwnpal_handle_miss_line(app, line);
     }
     // any PWNPAL_* line proves the board is alive; stamp the link watchdog here
-    if(strncmp(line, "PWNPAL_", 10) == 0) {
+    if(strncmp(line, "PWNPAL_", 7) == 0) {
         with_view_model(
             app->view,
             PwnpalModel * model,

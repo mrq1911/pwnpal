@@ -1372,6 +1372,8 @@ static void pwnpal_handle_miss_line(PwnpalApp* app, const char* line) {
         true);
 }
 
+static const char* capture_name(CaptureMode m); // defined below; used for the telemetry mode cols
+
 // "PWNPAL_EPOCH {...}" — dev telemetry (fw v4): one CSV row per epoch for offline tuning
 static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
     int n = 0, recon = 0, att = 0, chans = 0, assoc = 0, deauth = 0, uni = 0, sta = 0, hs = 0,

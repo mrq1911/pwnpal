@@ -259,6 +259,12 @@ typedef struct {
     uint16_t list_idx; // selected AP index (into the filtered list) in ScreenApList
     uint16_t list_top; // scroll window top in ScreenApList
     uint8_t list_filter; // ScreenApList filter: 0=all, 1=pwned, 2=whitelisted
+    // frozen render order for ScreenApList so rows don't reshuffle under the cursor as RSSI ticks.
+    // rebuilt on entry/filter-change and, while open, only after the user pauses navigating.
+    uint16_t list_order[AP_MAX];
+    uint16_t list_order_n;
+    uint32_t list_resort_tick; // tick_secs of the last order rebuild
+    uint32_t list_input_tick; // tick_secs of the last list keypress (suppresses resort while active)
     uint16_t detail_ap; // aps[] index shown in ScreenApDetail
     uint16_t fl_idx; // selected friend (into the ordered list) in ScreenFriendList
     uint16_t fl_top; // scroll window top in ScreenFriendList
@@ -1930,6 +1936,9 @@ static void draw_titlebar(Canvas* c, const char* title, const char* right) {
     canvas_set_color(c, ColorBlack);
 }
 
+#define APLIST_ROWS 5
+#define MENU_ROWS 6 // menu has no titlebar, so one more row fits
+
 // fill out[] with filtered aps[] indices: live signal first, then strongest RSSI, discovery order as a stable tiebreak. insertion sort, n<=256
 static uint16_t ap_filtered(const PwnpalModel* m, uint16_t* out) {
     uint16_t n = 0;
@@ -1960,6 +1969,25 @@ static uint16_t ap_filtered(const PwnpalModel* m, uint16_t* out) {
     return n;
 }
 
+// how long to hold a rebuilt list order, and how long to wait after the last keypress before
+// letting a rebuild happen — so the list never reorders while you're scrolling it.
+#define LIST_RESORT_MIN_SECS 8
+#define LIST_RESORT_IDLE_SECS 3
+
+// recompute the frozen list order from the current filter, then keep the selection sane.
+static void list_rebuild_order(PwnpalModel* m) {
+    m->list_order_n = ap_filtered(m, m->list_order);
+    m->list_resort_tick = m->tick_secs;
+    if(m->list_order_n == 0) {
+        m->list_idx = 0;
+        m->list_top = 0;
+        return;
+    }
+    if(m->list_idx >= m->list_order_n) m->list_idx = m->list_order_n - 1;
+    if(m->list_idx < m->list_top) m->list_top = m->list_idx;
+    if(m->list_idx >= m->list_top + APLIST_ROWS) m->list_top = m->list_idx - APLIST_ROWS + 1;
+}
+
 // distinct APs actually heard this session (ap_seen_tick != 0). counts persisted APs re-heard
 // this run, unlike aps_session which only fires on first-ever discovery -> stays >0 while the
 // list has live items.
@@ -1969,9 +1997,6 @@ static uint16_t aps_seen_session(const PwnpalModel* m) {
         if(m->ap_seen_tick[i]) n++;
     return n;
 }
-
-#define APLIST_ROWS 5
-#define MENU_ROWS 6 // menu has no titlebar, so one more row fits
 
 // True if this friend's RSSI is fresh enough to show a live meter (heard within the TTL).
 static bool friend_signal_recent(const PwnpalModel* m, uint16_t i) {
@@ -2128,6 +2153,24 @@ static void pwnpal_draw_menu(Canvas* canvas, const PwnpalModel* model) {
     }
 }
 
+// tiny 7x6 skull marking a captured AP in the list. drawn as lit pixels only, so the eye/mouth
+// gaps show through as background (works on both normal and selected/inverted rows). x = left
+// edge, cy = the row's icon centre.
+static void draw_skull(Canvas* canvas, int x, int cy) {
+    static const uint8_t rows[6] = {
+        0x3E, // .XXXXX.  cranium top
+        0x7F, // XXXXXXX
+        0x5D, // X.XXX.X  eyes (gaps at col1,col5)
+        0x7F, // XXXXXXX
+        0x3E, // .XXXXX.  jaw
+        0x2A, // .X.X.X.  teeth
+    };
+    int top = cy - 3;
+    for(int ry = 0; ry < 6; ry++)
+        for(int rx = 0; rx < 7; rx++)
+            if(rows[ry] & (1 << (6 - rx))) canvas_draw_dot(canvas, x + rx, top + ry);
+}
+
 static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
     canvas_clear(canvas);
     char title[24];
@@ -2136,8 +2179,8 @@ static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
         model->list_filter == FilterPwned    ? "PWNED APS" :
         model->list_filter == FilterWhitelist ? "IGNORED" :
                                                 "RECENT APS");
-    uint16_t idx[AP_MAX];
-    uint16_t n = ap_filtered(model, idx);
+    const uint16_t* idx = model->list_order; // frozen order; rebuilt off the render path
+    uint16_t n = model->list_order_n;
     // hint matches the menu counters: recent = APs heard this session, pwned = lifetime total;
     // ignored stays the live filtered count.
     const Persona* pp = model->persona;
@@ -2202,6 +2245,11 @@ static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
                 snprintf(cc, sizeof(cc), "%u", (unsigned)model->ap_clients[apidx]);
                 right_x = bar_x - 4 - (int)canvas_string_width(canvas, cc);
                 canvas_draw_str(canvas, right_x, y, cc);
+            }
+            if(a->pmkid || a->handshake) { // captured -> skull; hollow eyes read at 7px
+                int kx = right_x - 3 - 7;
+                draw_skull(canvas, kx, cy);
+                right_x = kx;
             }
         }
         draw_str_trunc(canvas, name_x, y, name, right_x - name_x - 3);
@@ -2910,18 +2958,24 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
                         model->list_filter = FilterPwned;
                         model->list_idx = 0;
                         model->list_top = 0;
+                        list_rebuild_order(model);
+                        model->list_input_tick = model->tick_secs;
                         break;
                     case MenuAllAps:
                         model->screen = ScreenApList;
                         model->list_filter = FilterAll;
                         model->list_idx = 0;
                         model->list_top = 0;
+                        list_rebuild_order(model);
+                        model->list_input_tick = model->tick_secs;
                         break;
                     case MenuWhitelist:
                         model->screen = ScreenApList;
                         model->list_filter = FilterWhitelist;
                         model->list_idx = 0;
                         model->list_top = 0;
+                        list_rebuild_order(model);
+                        model->list_input_tick = model->tick_secs;
                         break;
                     case MenuFriends:
                         model->screen = ScreenFriendList;
@@ -2981,8 +3035,8 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
             with_view_model(
                 app->view, PwnpalModel * model,
                 {
-                    uint16_t idx[AP_MAX];
-                    uint16_t n = ap_filtered(model, idx);
+                    model->list_input_tick = model->tick_secs; // hold off resort while scrolling
+                    uint16_t n = model->list_order_n;
                     if(n) {
                         // Wrap both ways so you can run off either end to the other.
                         if(event->key == InputKeyDown)
@@ -3002,10 +3056,10 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
             with_view_model(
                 app->view, PwnpalModel * model,
                 {
-                    uint16_t idx[AP_MAX];
-                    uint16_t n = ap_filtered(model, idx);
+                    model->list_input_tick = model->tick_secs;
+                    uint16_t n = model->list_order_n;
                     if(n && model->list_idx < n) {
-                        ApRec* a = &model->aps[idx[model->list_idx]];
+                        ApRec* a = &model->aps[model->list_order[model->list_idx]];
                         if(is_left) { // exclusive: one focus AP, clears ignore
                             bool on = !a->targeted;
                             for(uint16_t i = 0; i < model->ap_count; i++)
@@ -3023,18 +3077,8 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
                             a->whitelisted = !a->whitelisted;
                             if(a->whitelisted) a->targeted = false;
                         }
-                        // Toggling may drop this row from a filtered view — reclamp.
-                        uint16_t n2 = ap_filtered(model, idx);
-                        if(n2 == 0) {
-                            model->list_idx = 0;
-                            model->list_top = 0;
-                        } else {
-                            if(model->list_idx >= n2) model->list_idx = n2 - 1;
-                            if(model->list_idx < model->list_top)
-                                model->list_top = model->list_idx;
-                            if(model->list_idx >= model->list_top + APLIST_ROWS)
-                                model->list_top = model->list_idx - APLIST_ROWS + 1;
-                        }
+                        // a user toggle can drop this row from a filtered view -> rebuild + reclamp
+                        list_rebuild_order(model);
                         need_advertise = model->advertising;
                     }
                 },
@@ -3046,10 +3090,9 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
             with_view_model(
                 app->view, PwnpalModel * model,
                 {
-                    uint16_t idx[AP_MAX];
-                    uint16_t n = ap_filtered(model, idx);
+                    uint16_t n = model->list_order_n;
                     if(n && model->list_idx < n) {
-                        model->detail_ap = idx[model->list_idx];
+                        model->detail_ap = model->list_order[model->list_idx];
                         model->screen = ScreenApDetail;
                     }
                 },
@@ -3070,8 +3113,8 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
             with_view_model(
                 app->view, PwnpalModel * model,
                 {
-                    uint16_t idx[AP_MAX];
-                    uint16_t n = ap_filtered(model, idx);
+                    const uint16_t* idx = model->list_order; // same frozen order as the list
+                    uint16_t n = model->list_order_n;
                     if(n) {
                         uint16_t pos = 0;
                         for(uint16_t k = 0; k < n; k++)
@@ -3344,6 +3387,13 @@ static void pwnpal_timer_callback(void* ctx) {
             if(model->screen == ScreenAbout) model->about_scroll += model->about_speed;
             if(second) {
                 model->tick_secs++;
+                // refresh the list order only while it's open AND you've paused navigating, so new
+                // /stronger APs fold in without rows ever reshuffling under the cursor mid-scroll.
+                if(model->screen == ScreenApList &&
+                   model->tick_secs - model->list_resort_tick >= LIST_RESORT_MIN_SECS &&
+                   model->tick_secs - model->list_input_tick >= LIST_RESORT_IDLE_SECS) {
+                    list_rebuild_order(model);
+                }
                 model->battery_pct = furi_hal_power_get_pct(); // for the home BAT slot
                 // VBUS present = on external power (true when charging, full-and-plugged, or
                 // even data-only USB) -> saver forced off, slot shows PWR. is_charging() alone

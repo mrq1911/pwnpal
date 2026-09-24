@@ -1948,6 +1948,7 @@ static uint16_t aps_seen_session(const PwnpalModel* m) {
 }
 
 #define APLIST_ROWS 5
+#define MENU_ROWS 6 // menu has no titlebar, so one more row fits
 
 // True if this friend's RSSI is fresh enough to show a live meter (heard within the TTL).
 static bool friend_signal_recent(const PwnpalModel* m, uint16_t i) {
@@ -1983,7 +1984,6 @@ static uint16_t friend_order(const PwnpalModel* m, uint16_t* out) {
 
 static void pwnpal_draw_menu(Canvas* canvas, const PwnpalModel* model) {
     canvas_clear(canvas);
-    draw_titlebar(canvas, "pwnpal menu", NULL);
     canvas_set_font(canvas, FontSecondary);
 
     uint16_t wl = 0; // "Ignore" count (whitelisted)
@@ -1991,7 +1991,7 @@ static void pwnpal_draw_menu(Canvas* canvas, const PwnpalModel* model) {
         if(model->aps[i].whitelisted) wl++;
     }
 
-    int rows = APLIST_ROWS;
+    int rows = MENU_ROWS; // no titlebar here, so the whole screen is menu rows
     int top = 0;
     if(model->menu_idx >= rows) top = model->menu_idx - rows + 1;
     for(int r = 0; r < rows && top + r < MenuCount; r++) {
@@ -2086,7 +2086,7 @@ static void pwnpal_draw_menu(Canvas* canvas, const PwnpalModel* model) {
         case MenuAbout: label = "About"; break;
         default: break;
         }
-        int y = 11 + (r + 1) * 10; // baseline of this row
+        int y = 9 + r * 10; // baseline of this row (no titlebar; rows fill from the top)
         bool sel = it == model->menu_idx;
         if(sel) {
             canvas_draw_box(canvas, 0, y - 9, FLIPPER_SCREEN_WIDTH, 10);
@@ -2146,18 +2146,21 @@ static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
         }
         const char* name = a->ssid[0] ? a->ssid : a->bssid;
         bool pwned_view = model->list_filter == FilterPwned;
-        // left status icon: target = bullseye, ignore = no-entry, de-cloak = D. name follows it.
+        // left status icon: target = filled arrow, ignore = no-entry, de-cloak = D. name follows it.
         int cy = y - 3; // icon centre on the text line
         if(a->targeted) {
-            canvas_draw_circle(canvas, 4, cy, 3);
-            canvas_draw_dot(canvas, 4, cy);
+            // solid right-pointing triangle, tall base on the left tapering to an apex
+            for(int dx = 0; dx <= 3; dx++)
+                canvas_draw_line(canvas, 2 + dx, cy - (3 - dx), 2 + dx, cy + (3 - dx));
         } else if(a->whitelisted) {
             canvas_draw_circle(canvas, 4, cy, 3);
             canvas_draw_line(canvas, 2, cy + 2, 6, cy - 2);
         } else if(model->ap_decloaked[apidx]) {
             canvas_draw_str(canvas, 1, y, "D"); // hidden ESSID recovered via de-cloak
         }
-        int name_x = 10; // fixed left column for the icon so names align
+        // only marked rows reserve the icon gutter; unmarked names hug the left for max width
+        bool marked = a->targeted || a->whitelisted || model->ap_decloaked[apidx];
+        int name_x = marked ? 10 : 2;
         // right cluster: pwned view = CRACK/cap; else signal bar hugs the edge with the client
         // count just to its LEFT (blank when no clients).
         int right_x;

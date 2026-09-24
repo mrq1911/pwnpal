@@ -1487,6 +1487,17 @@ static void pwnpal_handle_gps_line(PwnpalApp* app, const char* line) {
             model->gps_sats = sats;
             model->gps_acc = acc;
             up = model->tick_secs;
+            // feed the live fix into last_lat/last_lon so Auto's movement detector sees fresh
+            // positions every ~3s. without this they only updated on a capture, so a stale
+            // coordinate made GPS displacement read ~0 and Auto stayed stuck in siege while driving.
+            if(model->gps_fix && coord_ok(lat, lon)) {
+                strncpy(model->last_lat, lat, sizeof(model->last_lat) - 1);
+                model->last_lat[sizeof(model->last_lat) - 1] = '\0';
+                strncpy(model->last_lon, lon, sizeof(model->last_lon) - 1);
+                model->last_lon[sizeof(model->last_lon) - 1] = '\0';
+                model->gps_seen = true;
+                pwnpal_update_place(model); // keep distance/bearing to home live too
+            }
             em = (int)effective_capture(model);
         },
         false);

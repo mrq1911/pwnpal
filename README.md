@@ -16,6 +16,16 @@ Flipper app, no PC or Raspberry Pi required.
     (___/  \/  <mrq>  \___)   \___)
 ```
 
+## Screenshots
+
+<p>
+<img src="doc/screenshots/home.png" width="256" alt="home / persona"/>
+<img src="doc/screenshots/list.png" width="256" alt="recent APs"/>
+<img src="doc/screenshots/detail.png" width="256" alt="AP detail"/>
+</p>
+
+<img src="doc/screenshots/demo.gif" width="256" alt="pwnpal in action"/>
+
 > ⚠️ **Authorized use only.** Association, deauthentication and handshake capture are active
 > radio attacks. Use pwnpal only on networks you own or are explicitly permitted to test.
 > The app ships capture/deauth **off** behind a one-time on-device consent gate. You are

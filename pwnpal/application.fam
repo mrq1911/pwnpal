@@ -1,6 +1,6 @@
 App(
     appid="pwnpal",
-    fap_version="1.0",
+    fap_version="3.0",
     name="Pwnpal",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="pwnpal_app",
@@ -11,6 +11,11 @@ App(
     fap_icon="pwnpal_10px.png",
     fap_category="GPIO",
     fap_icon_assets="assets",
-    fap_author="pwnagotchi-flipper",
-    fap_description="A social pwngrid peer so your lonely pwnagotchi gets a hello back",
+    fap_author="mrq1911",
+    fap_weburl="https://github.com/mrq1911/pwnpal",
+    fap_description=(
+        "A full pwnagotchi on your Flipper + ESP32: befriends other pwnagotchis over pwngrid, "
+        "captures WPA/WPA2 handshakes & PMKIDs, de-cloaks hidden SSIDs, GPS wardrives, and grows "
+        "a persona. Authorized use only; capture/deauth ship off behind a consent gate."
+    ),
 )

@@ -27,4 +27,9 @@
 // ver=N on each PWNPAL_ADV; non-zero but below this -> board too old, warn the user
 #define PWNPAL_FW_PROTO 6
 
+// PWNPAL_EXPECTED_FW_COMMIT (the firmware build this app expects) is generated into version.h by
+// gen_version.sh as the last commit touching pwnpal-marauder/ — the same value apply_pwnpal.py
+// stamps into the firmware's fw=. board reports a different hash on PWNPAL_ADV -> recommend a
+// reflash. it only changes when firmware sources change, so app-only releases never nag.
+
 // FLIPPER_SCREEN_WIDTH / _HEIGHT come from pwn_constants.h (via pwnagotchi.h).

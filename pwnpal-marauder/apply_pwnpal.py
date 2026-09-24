@@ -82,12 +82,18 @@ def main():
     src = find_src(Path(sys.argv[1]).resolve())
     print(f"patching Marauder at {src}")
 
-    # 0. copy the module in; bake our short commit into pwnpal_commit.h (fw=<hash> on PWNPAL_ADV).
+    # 0. copy the module in; bake the fw-source commit into pwnpal_commit.h (fw=<hash> on
+    # PWNPAL_ADV). use the last commit touching pwnpal-marauder/ (not HEAD) so the hash tracks the
+    # firmware itself — the app compares it to the same value to nudge a reflash. app-only commits
+    # leave it unchanged, so a current board never gets nagged.
     import subprocess
     try:
         commit = subprocess.check_output(
-            ["git", "-C", str(HERE), "rev-parse", "--short=7", "HEAD"], text=True).strip()
+            ["git", "-C", str(HERE), "log", "-1", "--abbrev=7", "--format=%h", "--", ":/pwnpal-marauder"],
+            text=True).strip()
     except Exception:
+        commit = "nogit"
+    if not commit:
         commit = "nogit"
     (HERE / "pwnpal_commit.h").write_text(
         '#pragma once\n#define PWNPAL_FW_COMMIT "%s"\n' % commit)

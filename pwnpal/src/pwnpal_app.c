@@ -282,6 +282,8 @@ typedef struct {
     uint32_t stayed_until; // tick_secs until which the happy "stayed" reaction shows (0 = off)
     int fw_proto; // ESP32 firmware protocol version from PWNPAL_ADV (0 = unknown)
     char fw_commit[16]; // ESP32 firmware build hash from PWNPAL_ADV fw= (empty = old/none)
+    bool fw_outdated; // board's fw_commit differs from PWNPAL_EXPECTED_FW_COMMIT -> reflash nudge
+    bool fw_notice_ack; // user dismissed the reflash-recommendation takeover this session
     uint32_t pwn_active; // captures our own attack earned (via=active), this session
     uint32_t pwn_passive; // captures sniffed passively (via=passive), this session
 
@@ -659,6 +661,11 @@ static void pwnpal_handle_adv_line(PwnpalApp* app, const char* line) {
             model->fw_proto = ver;
             strncpy(model->fw_commit, fw, sizeof(model->fw_commit) - 1);
             model->fw_commit[sizeof(model->fw_commit) - 1] = '\0';
+            // board reports a build that isn't the one this app ships with -> recommend a reflash.
+            // both hashes must be real (a "nogit" tarball build on either side can't be compared).
+            model->fw_outdated = fw[0] != '\0' && strcmp(fw, "nogit") != 0 &&
+                                 strcmp(PWNPAL_EXPECTED_FW_COMMIT, "nogit") != 0 &&
+                                 strcmp(fw, PWNPAL_EXPECTED_FW_COMMIT) != 0;
         },
         true);
 }
@@ -1721,6 +1728,22 @@ static void pwnpal_draw_link_down(Canvas* canvas, const PwnpalModel* model) {
     canvas_draw_str(canvas, 66, 54, "& firmware.");
 }
 
+// one-shot nudge when the board runs a different firmware build than this app ships with.
+// dismissed with any key (fw_notice_ack); the About screen keeps showing "reflash" after.
+static void pwnpal_draw_fw_update(Canvas* canvas, const PwnpalModel* model) {
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 2, 11, "Firmware update");
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 2, 25, "The board runs an older");
+    canvas_draw_str(canvas, 2, 34, "build. Reflash the ESP");
+    canvas_draw_str(canvas, 2, 43, "for the latest fixes.");
+    char l[32];
+    snprintf(l, sizeof(l), "on %s -> %s", model->fw_commit, PWNPAL_EXPECTED_FW_COMMIT);
+    canvas_draw_str(canvas, 2, 54, l);
+    canvas_draw_str(canvas, 2, 63, "Any key: dismiss");
+}
+
 // QR of the selected AP's location (a geo: URI); scan with a phone
 static void pwnpal_draw_ap_qr(Canvas* canvas, const PwnpalModel* model) {
     canvas_clear(canvas);
@@ -2490,7 +2513,9 @@ static void pwnpal_draw_about(Canvas* canvas, const PwnpalModel* model) {
     else if(model->fw_commit[0])
         snprintf(
             line, sizeof(line), "fw  %s %s", model->fw_commit,
-            model->fw_proto < PWNPAL_FW_PROTO ? "old" : "ok");
+            model->fw_proto < PWNPAL_FW_PROTO ? "old" :
+            model->fw_outdated              ? "reflash" :
+                                              "ok");
     else if(model->fw_proto < PWNPAL_FW_PROTO)
         snprintf(line, sizeof(line), "fw  v%d old (want v%d)", model->fw_proto, PWNPAL_FW_PROTO);
     else
@@ -2602,6 +2627,11 @@ static void pwnpal_draw_callback(Canvas* canvas, void* ctx) {
         pwnpal_draw_link_down(canvas, model);
         return;
     }
+    // recommend a reflash once when the board's build lags this app (home only, dismissible)
+    if(model->fw_outdated && !model->fw_notice_ack && model->screen == ScreenHome) {
+        pwnpal_draw_fw_update(canvas, model);
+        return;
+    }
     switch(model->screen) {
     case ScreenMenu: pwnpal_draw_menu(canvas, model); return;
     case ScreenApList: pwnpal_draw_aplist(canvas, model); return;
@@ -2709,7 +2739,19 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
     bool need_advertise = false;
 
     switch(screen) {
-    case ScreenHome:
+    case ScreenHome: {
+        // reflash nudge is up: any key dismisses it for the session (Back still exits)
+        bool notice_up = false;
+        with_view_model(
+            app->view, PwnpalModel * model,
+            { notice_up = model->fw_outdated && !model->fw_notice_ack; }, false);
+        if(notice_up) {
+            with_view_model(
+                app->view, PwnpalModel * model, { model->fw_notice_ack = true; }, true);
+            if(event->key == InputKeyBack) return false;
+            return true;
+        }
+    }
         if(event->key == InputKeyBack)
             return false; // Back exits straight to the launcher (no prompt)
         if(event->key == InputKeyOk) { // OK opens the menu

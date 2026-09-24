@@ -1598,11 +1598,7 @@ static void pwnpal_populate(PwnpalModel* model) {
         (unsigned long)p->s.pwnd_tot);
 
     // message bubble (Mood page only). paused hint + fresh-catch shout take priority; else mood, and now and then a stat brag
-    if(model->confirm_exit) {
-        furi_string_set(pwn->message, "leaving me? Back=bye");
-    } else if(staying) {
-        furi_string_set(pwn->message, "yay, staying!");
-    } else if(!model->advertising) {
+    if(!model->advertising) {
         furi_string_set(pwn->message, "paused - OK for menu");
     } else if(strcmp(model->gps_place, "Look up!") == 0) {
         furi_string_set(pwn->message, "Look up!"); // at Mother, no home set -> persona says it too
@@ -2132,35 +2128,41 @@ static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
             canvas_draw_box(canvas, 0, y - 9, FLIPPER_SCREEN_WIDTH, 10);
             canvas_set_color(canvas, ColorWhite);
         }
-        // pwned view: name + [T/I] + capture status; other views also add signal bar + E/P/H flags
         const char* name = a->ssid[0] ? a->ssid : a->bssid;
         bool pwned_view = model->list_filter == FilterPwned;
-        char right[8];
-        if(pwned_view)
-            snprintf(right, sizeof(right), "%s", ap_crackable(a) ? "CRACK" : "cap");
-        else if(model->ap_clients[apidx]) // clients associated -> worth deauthing; blank when none
-            snprintf(right, sizeof(right), "%u", (unsigned)model->ap_clients[apidx]);
-        else
-            right[0] = '\0';
-        int fw = (int)canvas_string_width(canvas, right);
-        int fx = FLIPPER_SCREEN_WIDTH - 2 - fw; // right element hugs the right edge
-        int marker_x = pwned_view ? fx - 10 : 0;
-        if(!pwned_view) {
+        // left status icon: target = bullseye, ignore = no-entry, de-cloak = D. name follows it.
+        int cy = y - 3; // icon centre on the text line
+        if(a->targeted) {
+            canvas_draw_circle(canvas, 4, cy, 3);
+            canvas_draw_dot(canvas, 4, cy);
+        } else if(a->whitelisted) {
+            canvas_draw_circle(canvas, 4, cy, 3);
+            canvas_draw_line(canvas, 2, cy + 2, 6, cy - 2);
+        } else if(model->ap_decloaked[apidx]) {
+            canvas_draw_str(canvas, 1, y, "D"); // hidden ESSID recovered via de-cloak
+        }
+        int name_x = 10; // fixed left column for the icon so names align
+        // right cluster: pwned view = CRACK/cap; else signal bar hugs the edge with the client
+        // count just to its LEFT (blank when no clients).
+        int right_x;
+        if(pwned_view) {
+            const char* rt = ap_crackable(a) ? "CRACK" : "cap";
+            right_x = FLIPPER_SCREEN_WIDTH - 2 - (int)canvas_string_width(canvas, rt);
+            canvas_draw_str(canvas, right_x, y, rt);
+        } else {
             int bar_w = 26;
-            int bar_x = fx - 4 - bar_w;
-            marker_x = bar_x - 8;
-            // Only draw the meter if the signal is fresh; a stale AP shows no bar.
+            int bar_x = FLIPPER_SCREEN_WIDTH - 2 - bar_w; // bar hugs the right edge
             if(ap_signal_recent(model, apidx))
                 draw_progress(canvas, bar_x, y - 7, bar_w, 7, rssi_level(a->rssi), 50);
+            right_x = bar_x;
+            if(model->ap_clients[apidx]) { // clients -> worth deauthing; sits left of the bar
+                char cc[6];
+                snprintf(cc, sizeof(cc), "%u", (unsigned)model->ap_clients[apidx]);
+                right_x = bar_x - 4 - (int)canvas_string_width(canvas, cc);
+                canvas_draw_str(canvas, right_x, y, cc);
+            }
         }
-        draw_str_trunc(canvas, 3, y, name, marker_x - 5);
-        if(a->targeted)
-            canvas_draw_str(canvas, marker_x, y, "T");
-        else if(a->whitelisted)
-            canvas_draw_str(canvas, marker_x, y, "I");
-        else if(model->ap_decloaked[apidx])
-            canvas_draw_str(canvas, marker_x, y, "D"); // hidden ESSID recovered via de-cloak
-        canvas_draw_str(canvas, fx, y, right);
+        draw_str_trunc(canvas, name_x, y, name, right_x - name_x - 3);
         if(sel) canvas_set_color(canvas, ColorBlack);
     }
 }
@@ -2175,7 +2177,7 @@ static void pwnpal_draw_apdetail(Canvas* canvas, const PwnpalModel* model) {
     char mac[18];
     fmt_bssid_colons(a->bssid, mac);
     snprintf(l, sizeof(l), "%s  ch%d", mac, a->channel);
-    canvas_draw_str(canvas, 2, 22, l);
+    canvas_draw_str(canvas, 2, 21, l); // rows evenly spaced 10px: 21/31/41/51/61
     // distance to the AP's estimated location (triangulated, else strongest fix); needs a current fix
     float clat = parse_deg(model->last_lat), clon = parse_deg(model->last_lon);
     float alat = 1e9f, alon = 1e9f;
@@ -2199,21 +2201,21 @@ static void pwnpal_draw_apdetail(Canvas* canvas, const PwnpalModel* model) {
     else
         snprintf(age, sizeof(age), "old");
     if(ap_signal_recent(model, model->detail_ap)) {
-        draw_progress(canvas, 2, 30, 34, 8, rssi_level(a->rssi), 50);
+        draw_progress(canvas, 2, 24, 34, 8, rssi_level(a->rssi), 50);
         snprintf(l, sizeof(l), "%ddBm %s", a->rssi, age);
-        canvas_draw_str(canvas, 40, 37, l);
+        canvas_draw_str(canvas, 40, 31, l);
     } else {
         snprintf(l, sizeof(l), "%ddBm %s", a->rssi, age);
-        canvas_draw_str(canvas, 2, 37, l);
+        canvas_draw_str(canvas, 2, 31, l);
     }
     if(dist[0])
         canvas_draw_str(
-            canvas, FLIPPER_SCREEN_WIDTH - 2 - (int)canvas_string_width(canvas, dist), 37, dist);
+            canvas, FLIPPER_SCREEN_WIDTH - 2 - (int)canvas_string_width(canvas, dist), 31, dist);
     // live from the ESP (fw>=6): associated clients + assoc/deauth bursts aimed at this AP
     snprintf(
         l, sizeof(l), "clients %u   atk %u", (unsigned)model->ap_clients[model->detail_ap],
         (unsigned)model->ap_attacks[model->detail_ap]);
-    canvas_draw_str(canvas, 2, 45, l);
+    canvas_draw_str(canvas, 2, 41, l);
     // Crackability as a plain-language formula (what we have -> whether it cracks).
     const char* key = a->pmkid ? "PMKID" : a->handshake ? "HS" : NULL;
     if(a->has_essid && key)
@@ -2224,19 +2226,19 @@ static void pwnpal_draw_apdetail(Canvas* canvas, const PwnpalModel* model) {
         snprintf(l, sizeof(l), "ESSID, no key yet");
     else
         snprintf(l, sizeof(l), "nothing caught yet");
-    canvas_draw_str(canvas, 2, 53, l);
+    canvas_draw_str(canvas, 2, 51, l);
     // bottom row: target[x] (Left), ignore[x] (Right), and a centred OK-map hint when a location is known
     snprintf(l, sizeof(l), "target[%c]", a->targeted ? 'x' : ' ');
-    canvas_draw_str(canvas, 2, 63, l);
+    canvas_draw_str(canvas, 2, 61, l);
     snprintf(l, sizeof(l), "ignore[%c]", a->whitelisted ? 'x' : ' ');
     int rw = (int)canvas_string_width(canvas, l);
-    canvas_draw_str(canvas, FLIPPER_SCREEN_WIDTH - 2 - rw, 63, l);
+    canvas_draw_str(canvas, FLIPPER_SCREEN_WIDTH - 2 - rw, 61, l);
     if(alat < 1e8f) {
         const char* h = "map";
         int gw = 7 + 2 + (int)canvas_string_width(canvas, h);
         int gx = (FLIPPER_SCREEN_WIDTH - gw) / 2;
-        canvas_draw_disc(canvas, gx + 3, 60, 3);
-        canvas_draw_str(canvas, gx + 9, 63, h);
+        canvas_draw_disc(canvas, gx + 3, 58, 3);
+        canvas_draw_str(canvas, gx + 9, 61, h);
     }
 }
 
@@ -2689,36 +2691,8 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
 
     switch(screen) {
     case ScreenHome:
-        // exit: first Back prompts, second Back quits; any other key cancels; a dead board just exits
-        if(event->key == InputKeyBack) {
-            bool quit = false;
-            with_view_model(
-                app->view, PwnpalModel * model,
-                {
-                    if(model->link_down || model->confirm_exit) {
-                        quit = true;
-                    } else {
-                        model->confirm_exit = true;
-                        model->confirm_secs = model->tick_secs;
-                    }
-                },
-                true);
-            return !quit; // false -> ViewDispatcher runs pwnpal_exit and the app closes
-        }
-        {
-            bool cancelled = false;
-            with_view_model(
-                app->view, PwnpalModel * model,
-                {
-                    if(model->confirm_exit) {
-                        model->confirm_exit = false;
-                        model->stayed_until = model->tick_secs + CONFIRM_STAY_SECS; // happy "phew"
-                        cancelled = true;
-                    }
-                },
-                true);
-            if(cancelled) return true; // this keypress just dismisses the prompt
-        }
+        if(event->key == InputKeyBack)
+            return false; // Back exits straight to the launcher (no prompt)
         if(event->key == InputKeyOk) { // OK opens the menu
             with_view_model(
                 app->view, PwnpalModel * model,

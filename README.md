@@ -1,21 +1,11 @@
-# Pwnagotchi-Flipper interface
-This program will interface the pwnagotchi with the flipper. This will be accomplished using custom code on the pwnagotchi's end to give the flipper simple rendering instructions over UART.
+# pwnpal
 
-<img src='doc/attachments/PwnZeroBaseWFace.png' alt='Flipper screen showing base Pwnagotchi display' height="128" width="256"/>
-<img src="doc/attachments/PwnInAction.gif" width="256" height="160"/>
+**A full [pwnagotchi](https://pwnagotchi.org) on your Flipper Zero + ESP32 wifi board.**
 
-## Layout
-```
-pwnagotchi-flipper
- |--> flipagotchi/         Flipper-side app: renders a wired pwnagotchi's screen
- |--> pwnzero/             pwnagotchi-side plugin that feeds flipagotchi over UART
- |--> pwnpal/           Flipper-side app: a social pwngrid peer (see below)
- |--> pwnpal-marauder/  ESP32 Marauder fork bits that broadcast the friend beacon
-```
-- flipagotchi is the Flipper-side application
-- pwnzero is the pwnagotchi-side application
-
-## Pwnpal: give your lonely pwnagotchi a friend
+pwnpal turns the Flipper's ESP32 board into a self-contained pwnagotchi: it makes friends
+with other pwnagotchis over the air, captures WPA/WPA2 handshakes & PMKIDs, wardrives with
+GPS, and grows a little persona that levels up the more it sees — all driven from a native
+Flipper app, no PC or Raspberry Pi required.
 
 ```
          _    __/\_______  _______
@@ -26,90 +16,86 @@ pwnagotchi-flipper
     (___/  \/  <mrq>  \___)   \___)
 ```
 
-A pwnagotchi gets sad when no other units are around. Marauder can already detect a
-pwnagotchi's beacons, but it never answers — so your unit stays lonely. `pwnpal` makes
-the Flipper's ESP32 board broadcast a pwngrid-compatible advertisement so your pwnagotchi
-detects a peer, says "Hello!", and (thanks to a stable, growing identity) befriends it
-over time. The Flipper keeps a little persona that levels up the longer it runs and the
-more units it meets.
+> ⚠️ **Authorized use only.** Association, deauthentication and handshake capture are active
+> radio attacks. Use pwnpal only on networks you own or are explicitly permitted to test.
+> The app ships capture/deauth **off** behind a one-time on-device consent gate. You are
+> responsible for complying with local law.
 
-> **✅ Fully Marauder-compatible.** pwnpal ships as a small patch on top of ESP32
-> Marauder, so the firmware you flash is a *complete Marauder build with the extra
-> `pwnpal` command added*. Flash the ESP32 **once** and you get **both**: the normal
-> Marauder GUI / companion app **and** pwnpal — nothing about stock Marauder is removed
-> or broken. Your Flipper drives the pwnpal brain over the same UART Marauder already uses.
+## What it does
 
-See [`pwnpal/README.md`](pwnpal/README.md), which boards work + how to flash in
-[`COMPATIBLE_HARDWARE.md`](COMPATIBLE_HARDWARE.md), the Marauder patch in
-[`pwnpal-marauder/PATCH.md`](pwnpal-marauder/PATCH.md), and the wire format in
-[`doc/PwnpalProtocol.md`](doc/PwnpalProtocol.md).
+- **Social pwngrid peer** — broadcasts a pwnagotchi-compatible beacon so nearby units
+  detect it, say *"Hello!"*, and befriend it over time (stable identity → rising
+  encounters → ♥). Sniffs other units back and remembers the friends it meets.
+- **Real capture** — WPA/WPA2 4-way **handshakes** and **PMKID**, saved as per-BSSID
+  `.pcap` on the Flipper SD, ready for hashcat `-m 22000`.
+- **Opt-in attacks** — association (for PMKID) and targeted **deauth** (for handshakes),
+  client-aware so effort lands where clients actually are.
+- **De-cloak** — recovers hidden ESSIDs from clients' (re)association requests, turning an
+  otherwise-uncrackable capture into a crackable one.
+- **GPS wardrive** — geotags APs and writes a WiGLE-compatible `wardrive.csv`; on-device
+  distance/bearing to a saved home.
+- **Capture modes** — *Wardrive* (fast sweep, PMKID-only), *Roam* (sweep + deauth on the
+  move), *Siege* (park and hammer one area), *Auto* (switches by movement).
+- **On-device browser** — scroll recent APs and pwned APs with live signal bars, client
+  counts, target/ignore/de-cloak markers, and a per-AP detail + map QR.
+- **Battery saver** — light/deep duty-cycling; auto-off on external power.
+- **Web export** — a static, offline page converts your captures to hashcat 22000 and maps
+  the wardrive: **https://mrq1911.github.io/pwnagotchi-flipper/**
 
-### Full pwnagotchi mode
+## Hardware
 
-Beyond just saying hi, the friend can now behave like a real pwnagotchi:
+| Part | Notes |
+|---|---|
+| Flipper Zero | runs the pwnpal app |
+| ESP32 wifi board | **Feberis Pro** (classic ESP32) is the reference board; other Marauder-capable ESP32/S2/S3 boards should work |
 
-- **scans** APs and passively **captures** WPA handshakes / PMKIDs → earns **real** pwnd,
-  and reacts with pwnagotchi moods and faces.
-- **saves a crackable `.pcap` per network** on the Flipper SD
-  (`/ext/apps_data/pwnpal/handshakes/<bssid>.pcap`, linktype 105). Each file now carries
-  the network's ESSID beacon plus its EAPOL/PMKID frames → feed it straight to hcxtools /
-  hashcat (mode 22000) / aircrack-ng, no manual ESSID needed.
-- **geotags** every sighting when a GPS is present (Feberis Pro) and writes a
-  **WiGLE-importable** wardrive log (`/ext/apps_data/pwnpal/wardrive.csv`).
-- optional active **deauth** to speed a capture along.
+The ESP32 runs a **Marauder fork**: pwnpal is a small patch on top of ESP32 Marauder, so a
+single flash gives you a **complete Marauder build with an extra `pwnpal` command** — the
+normal Marauder GUI and companion apps keep working, pwnpal rides alongside on the same UART.
 
-> **⚠️ Authorized use only.** Handshake/PMKID capture and deauth are only legal on Wi-Fi
-> networks you **own or are explicitly authorized to test**. They run a full pwnagotchi by
-> default, but stay **gated behind a one-time authorization screen** shown on first launch
-> (accept to arm capture + deauth; decline to stay presence-only). You can drop back to
-> off/passive any time from the menu, and target/whitelist specific APs. Unauthorized use
-> may be a crime where you live — you alone are responsible for how you use this.
-> Educational purposes only.
+See [COMPATIBLE_HARDWARE.md](COMPATIBLE_HARDWARE.md) for the board matrix.
 
-## Setup
-### Flipagotchi Setup (Flipper side)
-<b>The flipagotchi app can be downloaded from the flipper app store.</b> If you would like to do things manually then follow these instructions.
-1. Connect your Flipper to your computer
-2. Clone the Flipper Zero firmware onto your machine
-3. Place the ```flipagotchi/``` directory into the ```applications_user/```
-4. Open a terminal and navigate to the root of the firmware
-5. Execute the following command to compile the app and launch it on the Flipper:<br>
-    ```./fbt launch_app APPSRC=applications_user/flipagotchi```
-6. This will now compile and load the app onto your Flipper
+## Install
 
-### PwnZero Setup (Pwnagotchi side)
-This procedure will explain how to configure the Pwnagotchi to use the PwnZero plugin to communicate with the Flipper. Note: You may need to change the pyserial file name based on whichever version pip downloaded for you.
-1. On your host machine run `pip3 download pyserial`, this should download a `.whl` file.
-2. Take note of the filename of the `.whl` and insert that instead of mine
-3. Also on the host, run `scp pyserial-3.5-py2.py3-none-any.whl pi@10.0.0.2:/home/pi` to transfer the `.whl` file to the pwnagotchi
-4. Now on the pwnagotchi install the module as root with `sudo pip3 install /home/pi/pyserial-3.5-py2.py3-none-any.whl`
-5. Disable Bluetooth on the Pi by adding ```dtoverlay=disable-bt``` at the bottom of the ```/boot/config.txt``` file
-    1. This needs to be disabled so that the full UART is directed to ```/dev/serial0```
-6. Enter the raspberry pi configuration settings with `sudo raspi-config`
-    1. Select `Interface Options`
-    2. Select `Serial Port`
-    3. Select `No` for shell over serial
-    4. Select `Yes` for serial enabled
-6. Place the PwnZero.py file somewhere on the Pi in either its own folder or a folder with other plugins
-7. Edit ```/etc/pwnagotchi/config.toml``` file and set ```main.custom_plugins = "/path/to/plugin/folder"```
-8. Follow hardware setup shown in `doc/HardwareSetup.md` to connect the devices
-9. Restart the Pwnagotchi and open the Flipagotchi app on the Flipper Zero
+**1. Flash the ESP32 firmware** (once): grab `pwnpal-firmware-<board>.bin` from
+[Releases](https://github.com/mrq1911/pwnpal/releases), copy it to the Flipper SD, then in
+**Apps → GPIO → ESP Flasher**: *Enter Bootloader* → *Manual Flash* → *Advanced Mode* →
+*Custom* slot → the bin @ `0x0` → *FLASH* → *Reset Board*. (Rear switch on the Feberis set
+to ESP32.)
 
-### Setup note
-[Chrismettal](https://github.com/Chrismettal) has designed a "backpack" for the Flipper Zero which is a board that allows you to cleanly attach various devices to the Flipper. They have created one for the Raspberry Pi Zero W which would be a great way to keep your Flipagotchi tidy! Here is a link to their [project](https://github.com/Chrismettal/flipper-zero-backpacks#raspberry-pi-zero-w).
+**2. Install the app**: copy `pwnpal.fap` to `/ext/apps/GPIO/` (qFlipper or the mobile app),
+then launch **Apps → GPIO → Pwnpal**.
 
-## Development stages
-### Stage 1: Simple display rendering
-- Stage 1 will focus on getting the Pwnagotchi display to render on the Flipper's display
+## Use
 
-### Stage 2: App interaction
-- Stage 2 will allow the user to interact and control the pwnagotchi using the Flipper's interface
+- **OK** opens the menu (Recent APs, Pwned APs, Mode, Advertise, Ignore, Friends, Target,
+  Stats, tunables, Set home, Battery saver, Reset, About).
+- **Up/Down** on the home screen cycle the capture **Mode** (shown top-right).
+- **Left/Right** scroll the persona's stat pages.
+- First launch shows a one-time **authorization** screen; accept to arm capture/deauth,
+  decline to stay social-only.
 
-## Contributing
-If you would like to contribute, you may make a pull request. It will be helpful if you first open an issue describing the change that you are interested in contributing.
+Loot lands in `/ext/apps_data/pwnpal/`: `handshakes/*.pcap`, `wardrive.csv`, plus dev
+telemetry CSVs. Feed the pcaps + wardrive.csv to the [web export tool](https://mrq1911.github.io/pwnagotchi-flipper/).
 
-## License
-[MIT](https://choosealicense.com/licenses/mit/)
+## Build from source
 
-## Disclaimer
-<b>This program is meant for educational purposes ONLY. I disclaim any and all responsibility for the usage of this program by external parties (not me).</b>
+- **App (fap):** [`ufbt`](https://github.com/flipperdevices/flipperzero-ufbt) against the
+  Unleashed SDK — `cd pwnpal && sh gen_version.sh && ufbt`.
+- **Firmware:** clone ESP32 Marauder, run `pwnpal-marauder/apply_pwnpal.py <marauder>` to
+  patch in the `pwnpal` command, then build with arduino-cli (see
+  [.github/workflows/build-pwnpal.yml](.github/workflows/build-pwnpal.yml)).
+
+Protocol + internals: [doc/PwnpalProtocol.md](doc/PwnpalProtocol.md).
+Roadmap: [doc/PwnpalRoadmap.md](doc/PwnpalRoadmap.md).
+
+## Credits & license
+
+MIT. Built on the shoulders of:
+[pwnagotchi](https://github.com/evilsocket/pwnagotchi) & pwngrid (evilsocket),
+[ESP32 Marauder](https://github.com/justcallmekoko/ESP32Marauder) (justcallmekoko),
+the flipagotchi renderer and the original pwnagotchi-flipper (Matt London), and
+RogueMaster's pwnagotchi face art. `<mrq>` mark and pwnpal by mrq1911.
+
+The repo also retains the original `flipagotchi/` + `pwnzero/` (wired-pwnagotchi screen
+mirror) from the upstream project; pwnpal is independent of them.

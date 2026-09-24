@@ -1034,8 +1034,15 @@ static void pwnpal_handle_pwnd_line(PwnpalApp* app, const char* line) {
             up = model->tick_secs;
             // gps-outlier guard before it geotags loot
             if(have_gps && gps_outlier(model, parse_deg(lat), parse_deg(lon))) have_gps = false;
-            // dedup by BSSID so a 15s re-emit counts once (all modes capture now)
-            if(pwnd_seen_insert(model, key)) {
+            bool ap_new = false;
+            int ai = ap_get(model, key, &ap_new);
+            // already captured (persisted from a prior session, or earlier this run)? after a
+            // restart the ESP re-attacks everything in range and re-emits PWND — those must not
+            // re-count, or lifetime pwns inflate on every reboot in the same spot.
+            bool had_capture =
+                (ai >= 0) && !ap_new && (model->aps[ai].pmkid || model->aps[ai].handshake);
+            // count a capture once per AP: skip 15s re-emits and already-captured APs
+            if(!had_capture && pwnd_seen_insert(model, key)) {
                 persona_note_pwnd(model->persona);
                 strncpy(model->last_pwnd_ssid, label, sizeof(model->last_pwnd_ssid) - 1);
                 model->last_pwnd_ssid[sizeof(model->last_pwnd_ssid) - 1] = '\0';
@@ -1045,8 +1052,6 @@ static void pwnpal_handle_pwnd_line(PwnpalApp* app, const char* line) {
                 counted = true;
             }
             // record the capture on the AP regardless of the count gate (reflects what landed)
-            bool ap_new = false;
-            int ai = ap_get(model, key, &ap_new);
             if(ai >= 0) {
                 ApRec* a = &model->aps[ai];
                 if(ap_new) persona_note_ap(model->persona);

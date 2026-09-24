@@ -190,6 +190,8 @@ class Pwnpal {
         uint8_t attacks; // active-mode assoc/deauth bursts aimed at this AP
         bool missed;     // already emitted a PWNPAL_MISS for it
         bool pmf;        // 802.11w PMF required (RSN MFPR) -> deauth is futile, PMKID only
+        bool hs_anonce;  // saw an ANonce (M1/M3) -> half of a crackable 4-way
+        bool hs_m2;      // saw the M2 reply (SNonce+MIC) -> the other half
         uint32_t last_rssi_ms; // millis() of the last PWNPAL_RSSI we streamed for it
     };
     // dense areas top 80 APs; 64 dropped ~16. 128 covers a busy neighbourhood.

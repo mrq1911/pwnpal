@@ -1070,6 +1070,8 @@ bool Pwnpal::reportAP(const uint8_t* payload, int length, int rssi, int channel,
     _recon[_n_recon].rssi = r;  // first-seen; refreshed on later beacons
     _recon[_n_recon].attacks = 0;
     _recon[_n_recon].missed = false;
+    _recon[_n_recon].hs_anonce = false;
+    _recon[_n_recon].hs_m2 = false;
     _recon[_n_recon].pmf = pwnpal_rsn_requires_pmf(payload, length); // 802.11w -> no deauth
     _recon[_n_recon].last_rssi_ms = millis();  // the PWNPAL_AP line already carried it
     // Publish the entry before bumping the count (rx-callback writer vs loop reader).
@@ -1167,10 +1169,16 @@ bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int c
     bool key_mic = key_info & (1 << 8);
     bool secure  = key_info & (1 << 9);
 
+    // Key Nonce (32B) at eo+17: nonzero on M1/M3 (ANonce) and M2 (SNonce), ~zero on M4.
+    bool nonce_nz = false;
+    for (int b = 0; b < 32 && eo + 17 + b < length; b++)
+        if (payload[eo + 17 + b]) { nonce_nz = true; break; }
+
+    int ri = reconIndex(bssid);
     const char* type = nullptr;
 
-    if (key_ack && !key_mic && !secure) {
-        // M1 -- look for an RSN PMKID KDE in Key Data.
+    if (key_ack && !key_mic) {
+        // M1 -- self-contained PMKID (crackable alone), and the ANonce for a 4-way pair.
         int kdl_off = eo + 97;                           // Key Data Length (2)
         if (kdl_off + 1 < length) {
             int kdl = (payload[kdl_off] << 8) | payload[kdl_off + 1];
@@ -1190,13 +1198,19 @@ bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int c
                 }
             }
         }
+        if (!type && nonce_nz && ri >= 0) _recon[ri].hs_anonce = true; // bank the ANonce
+    } else if (key_ack && key_mic) {
+        if (nonce_nz && ri >= 0) _recon[ri].hs_anonce = true;          // M3 also carries ANonce
     } else if (!key_ack && key_mic && !secure) {
-        type = "handshake";                              // M2: client replied
+        if (nonce_nz && ri >= 0) _recon[ri].hs_m2 = true;             // M2: client SNonce + MIC
     }
+
+    // a crackable 4-way needs BOTH the ANonce (M1/M3) and the M2 reply (SNonce+MIC). a lone M2
+    // is not enough, so we don't mark pwnd (and keep attacking) until the pair actually lands.
+    if (!type && ri >= 0 && _recon[ri].hs_anonce && _recon[ri].hs_m2) type = "handshake";
 
     if (type && markPwnd(bssid)) {
         _epoch_pwnd = true;   // real activity this epoch -> keeps recon at full speed
-        int ri = reconIndex(bssid);
         const char* ssid = (ri >= 0) ? _recon[ri].ssid : "";
         // provenance: our attack vs an organic sniff -> active/passive telemetry.
         bool active = (ri >= 0) && _recon[ri].attacks > 0;

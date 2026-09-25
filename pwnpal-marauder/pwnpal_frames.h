@@ -30,3 +30,92 @@ static inline bool pwnpal_rsn_requires_pmf(const uint8_t* f, int len) {
     }
     return false;
 }
+
+// --- EAPOL / 4-way parsing (extracted from reportHandshake; pure + host-tested) ---
+
+// Locate the 802.1X (EAPOL) header: scan for the 0x888e etherType in the LLC/SNAP region and
+// return the offset of the 802.1X version byte just past it, or -1 if not present. Bounded to
+// the LLC/etherType window (bytes 30..40) so a coincidental 88 8e deeper in the payload — or in
+// the MAC header — can't false-match. Handles both the no-QoS (etherType@30) and QoS (@32) layouts.
+static inline int pwnpal_eapol_locate(const uint8_t* f, int len) {
+    int end = len - 2;
+    if(end > 40) end = 40;
+    for(int i = 30; i <= end; i++)
+        if(f[i] == 0x88 && f[i + 1] == 0x8e) return i + 2;
+    return -1;
+}
+
+typedef struct {
+    bool key_ack, key_mic, secure, install; // key_info bits 7, 8, 9, 6
+    uint8_t nonce[32];
+    bool nonce_nz; // Key Nonce: ANonce on M1/M3, SNonce on M2, ~zero on M4
+    uint8_t replay[8]; // EAPOL-Key replay counter (pairs M1<->M2)
+    uint8_t pmkid[16];
+    bool pmkid_nz; // RSN PMKID KDE present + non-zero (M1 PMKID attack)
+} PwnpalEapolKey;
+
+// Parse the EAPOL-Key frame whose 802.1X header starts at `eo` (from pwnpal_eapol_locate).
+// Returns false if it isn't an EAPOL-Key or is truncated before key_info; on true *out is filled.
+// Field offsets (from eo): key_info@5, key_len@7, replay@9(8), nonce@17(32), MIC@81(16),
+// key-data-len@97(2), key-data@99 — byte-for-byte the gopacket/bettercap layout. Bounds-checked.
+static inline bool pwnpal_eapol_key(const uint8_t* f, int len, int eo, PwnpalEapolKey* out) {
+    if(eo < 0 || eo + 6 >= len) return false; // need at least through key_info
+    if(f[eo + 1] != 0x03) return false; // 802.1X type must be Key (0x03)
+    for(int i = 0; i < 32; i++) out->nonce[i] = 0;
+    for(int i = 0; i < 8; i++) out->replay[i] = 0;
+    for(int i = 0; i < 16; i++) out->pmkid[i] = 0;
+    uint16_t ki = (uint16_t)((f[eo + 5] << 8) | f[eo + 6]);
+    out->key_ack = (ki & (1 << 7)) != 0;
+    out->key_mic = (ki & (1 << 8)) != 0;
+    out->secure = (ki & (1 << 9)) != 0;
+    out->install = (ki & (1 << 6)) != 0;
+    for(int b = 0; b < 8 && eo + 9 + b < len; b++) out->replay[b] = f[eo + 9 + b];
+    out->nonce_nz = false;
+    for(int b = 0; b < 32 && eo + 17 + b < len; b++) {
+        out->nonce[b] = f[eo + 17 + b];
+        if(out->nonce[b]) out->nonce_nz = true;
+    }
+    // RSN PMKID KDE in Key Data: DD <len> 00 0F AC 04 <16-byte PMKID>. WPA1 vendor KDEs use OUI
+    // 00 50 F2, so the 00 0F AC 04 match can't false-positive on them.
+    out->pmkid_nz = false;
+    int kdl_off = eo + 97;
+    if(kdl_off + 1 < len) {
+        int kdl = (f[kdl_off] << 8) | f[kdl_off + 1];
+        int kd = kdl_off + 2;
+        int kd_end = kd + kdl;
+        if(kd_end > len) kd_end = len;
+        for(int i = kd; i + 22 <= kd_end; i++) {
+            if(f[i] == 0xDD && f[i + 2] == 0x00 && f[i + 3] == 0x0F && f[i + 4] == 0xAC &&
+               f[i + 5] == 0x04) {
+                for(int b = 0; b < 16; b++) {
+                    out->pmkid[b] = f[i + 6 + b];
+                    if(out->pmkid[b]) out->pmkid_nz = true;
+                }
+                break;
+            }
+        }
+    }
+    return true;
+}
+
+// BSSID from the To-DS/From-DS bits (FC byte 1); optionally also returns the client (non-AP)
+// address. Mirrors the derivation in reportHandshake/reportClient. Callers pass frames already
+// known to be >= EAPOL-length (pwnpal_eapol_locate succeeded), so addr3@16 is in bounds.
+static inline const uint8_t* pwnpal_ds_bssid(const uint8_t* f, int len, const uint8_t** client) {
+    (void)len;
+    const uint8_t* bssid;
+    const uint8_t* cli;
+    bool tods = (f[1] & 0x01) != 0;
+    bool fromds = (f[1] & 0x02) != 0;
+    if(fromds && !tods) {
+        bssid = f + 10; cli = f + 4; // AP->STA: Addr2=BSSID, Addr1=STA
+    } else if(!fromds && tods) {
+        bssid = f + 4; cli = f + 10; // STA->AP: Addr1=BSSID, Addr2=STA
+    } else if(!fromds && !tods) {
+        bssid = f + 16; cli = f + 10; // IBSS: Addr3=BSSID
+    } else {
+        bssid = f + 10; cli = f + 4; // WDS: fallback
+    }
+    if(client) *client = cli;
+    return bssid;
+}

@@ -9,7 +9,7 @@ fail=0
 for src in test_*.cpp; do
     bin="/tmp/pwnpal-${src%.cpp}"
     echo "=== $src ==="
-    "$CXX" -std=c++17 -Wall -Wextra -Werror -O1 "$src" -o "$bin"
+    "$CXX" -std=c++17 -Wall -Wextra -Werror -O1 -fsanitize=address,undefined "$src" -o "$bin"
     "$bin" || fail=1
 done
 [ "$fail" -eq 0 ] && echo "ALL TESTS PASSED" || { echo "TESTS FAILED"; exit 1; }

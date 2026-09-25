@@ -1175,68 +1175,31 @@ void Pwnpal::reportDecloak(const uint8_t* payload, int length, int rssi, int cha
 
 bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int channel,
                                 bool has_fix, double lat, double lon) {
-    // EAPOL 0x888e at [30..31], or [32..33] with a 2-byte QoS control.
-    int eo;
-    if (length > 31 && payload[30] == 0x88 && payload[31] == 0x8e) eo = 32;
-    else if (length > 33 && payload[32] == 0x88 && payload[33] == 0x8e) eo = 34;
-    else return false;                                   // not EAPOL
+    // locate EAPOL (0x888e etherType) -> offset of the 802.1X header. see pwnpal_frames.h.
+    int eo = pwnpal_eapol_locate(payload, length);
+    if (eo < 0) return false;                            // not EAPOL
 
     has_fix = geoResolve(has_fix, &lat, &lon); // live fix, else recent last-known
 
-    // BSSID from the DS bits: derived up front so the streamed frame self-describes its
-    // pcap (no dependence on a preceding PWND).
-    bool tods   = payload[1] & 0x01;
-    bool fromds = payload[1] & 0x02;
-    const uint8_t* bssid;
-    if (fromds && !tods)       bssid = payload + 10;     // AP->STA: Addr2
-    else if (!fromds && tods)  bssid = payload + 4;      // STA->AP: Addr1
-    else if (!fromds && !tods) bssid = payload + 16;     // IBSS:    Addr3
-    else                       bssid = payload + 10;     // WDS: fallback Addr2
+    // BSSID from the DS bits: derived up front so the streamed frame self-describes its pcap.
+    const uint8_t* bssid = pwnpal_ds_bssid(payload, length, nullptr);
 
     streamFrameHex(bssid, payload, length);              // full EAPOL frame -> pcap
 
-    if (eo + 6 >= length) return true;                   // EAPOL but truncated
-    if (payload[eo + 1] != 0x03) return true;            // not EAPOL-Key; still save
-
-    uint16_t key_info = (payload[eo + 5] << 8) | payload[eo + 6];
-    bool key_ack = key_info & (1 << 7);
-    bool key_mic = key_info & (1 << 8);
-    bool secure  = key_info & (1 << 9);
-
-    // Key Nonce (32B) at eo+17: nonzero on M1/M3 (ANonce) and M2 (SNonce), ~zero on M4.
-    bool nonce_nz = false;
-    for (int b = 0; b < 32 && eo + 17 + b < length; b++)
-        if (payload[eo + 17 + b]) { nonce_nz = true; break; }
+    PwnpalEapolKey k;
+    if (!pwnpal_eapol_key(payload, length, eo, &k)) return true; // EAPOL but not a key / truncated
 
     int ri = reconIndex(bssid);
     const char* type = nullptr;
 
-    if (key_ack && !key_mic) {
+    if (k.key_ack && !k.key_mic) {
         // M1 -- self-contained PMKID (crackable alone), and the ANonce for a 4-way pair.
-        int kdl_off = eo + 97;                           // Key Data Length (2)
-        if (kdl_off + 1 < length) {
-            int kdl = (payload[kdl_off] << 8) | payload[kdl_off + 1];
-            int kd  = kdl_off + 2;                        // Key Data start
-            int kd_end = kd + kdl;
-            if (kd_end > length) kd_end = length;
-            for (int i = kd; i + 22 <= kd_end; i++) {
-                // DD <len> 00 0F AC 04 <16-byte PMKID>
-                if (payload[i] == 0xDD &&
-                    payload[i + 2] == 0x00 && payload[i + 3] == 0x0F &&
-                    payload[i + 4] == 0xAC && payload[i + 5] == 0x04) {
-                    bool nonzero = false;
-                    for (int b = 0; b < 16; b++)
-                        if (payload[i + 6 + b]) { nonzero = true; break; }
-                    if (nonzero) type = "pmkid";
-                    break;
-                }
-            }
-        }
-        if (!type && nonce_nz && ri >= 0) _recon[ri].hs_anonce = true; // bank the ANonce
-    } else if (key_ack && key_mic) {
-        if (nonce_nz && ri >= 0) _recon[ri].hs_anonce = true;          // M3 also carries ANonce
-    } else if (!key_ack && key_mic && !secure) {
-        if (nonce_nz && ri >= 0) _recon[ri].hs_m2 = true;             // M2: client SNonce + MIC
+        if (k.pmkid_nz) type = "pmkid";
+        else if (k.nonce_nz && ri >= 0) _recon[ri].hs_anonce = true; // bank the ANonce
+    } else if (k.key_ack && k.key_mic) {
+        if (k.nonce_nz && ri >= 0) _recon[ri].hs_anonce = true;      // M3 also carries ANonce
+    } else if (!k.key_ack && k.key_mic && !k.secure) {
+        if (k.nonce_nz && ri >= 0) _recon[ri].hs_m2 = true;          // M2: client SNonce + MIC
     }
 
     // a crackable 4-way needs BOTH the ANonce (M1/M3) and the M2 reply (SNonce+MIC). a lone M2

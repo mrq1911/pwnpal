@@ -1630,8 +1630,13 @@ static void pwnpal_populate(PwnpalModel* model) {
         (unsigned long)p->pwnd_run,
         (unsigned long)p->s.pwnd_tot);
 
-    // message bubble (Mood page only). paused hint + fresh-catch shout take priority; else mood, and now and then a stat brag
-    if(!model->advertising) {
+    // message bubble (Mood page only). exit prompt / staying beat take top priority; then paused
+    // hint + fresh-catch shout; else mood, and now and then a stat brag
+    if(model->confirm_exit) {
+        furi_string_set(pwn->message, "Exit pwnpal?");
+    } else if(model->tick_secs < model->stayed_until) {
+        furi_string_set(pwn->message, "staying!");
+    } else if(!model->advertising) {
         furi_string_set(pwn->message, "paused - OK for menu");
     } else if(strcmp(model->gps_place, "Look up!") == 0) {
         furi_string_set(pwn->message, "Look up!"); // at Mother, no home set -> persona says it too
@@ -2802,7 +2807,7 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
 
     switch(screen) {
     case ScreenHome: {
-        // reflash nudge is up: any key dismisses it for the session (Back still exits)
+        // reflash nudge is up: any key (incl Back) dismisses it for the session, nothing else
         bool notice_up = false;
         with_view_model(
             app->view, PwnpalModel * model,
@@ -2810,12 +2815,30 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
         if(notice_up) {
             with_view_model(
                 app->view, PwnpalModel * model, { model->fw_notice_ack = true; }, true);
-            if(event->key == InputKeyBack) return false;
+            return true;
+        }
+        // exit is two-step: first Back arms the prompt, second Back quits; any other key stays
+        bool exit_armed = false;
+        with_view_model(
+            app->view, PwnpalModel * model, { exit_armed = model->confirm_exit; }, false);
+        if(exit_armed) {
+            if(event->key == InputKeyBack) return false; // confirmed -> quit to launcher
+            with_view_model(
+                app->view, PwnpalModel * model,
+                {
+                    model->confirm_exit = false; // any other key cancels -> "staying" beat
+                    model->stayed_until = model->tick_secs + CONFIRM_STAY_SECS;
+                },
+                true);
             return true;
         }
     }
-        if(event->key == InputKeyBack)
-            return false; // Back exits straight to the launcher (no prompt)
+        if(event->key == InputKeyBack) {
+            with_view_model(
+                app->view, PwnpalModel * model,
+                { model->confirm_exit = true; model->confirm_secs = model->tick_secs; }, true);
+            return true; // first Back raises the prompt (auto-cancels after the timeout)
+        }
         if(event->key == InputKeyOk) { // OK opens the menu
             with_view_model(
                 app->view, PwnpalModel * model,

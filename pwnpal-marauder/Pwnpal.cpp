@@ -266,23 +266,30 @@ void Pwnpal::endEpoch(uint32_t now) {
     // in the cohort, so the attack-phase channel camping (which silences off-channel APs) can't
     // fake it. `adds` is the leading edge (new BSSIDs) for the fast case where APs don't persist.
     int cohort = 0, receding = 0;
+    long drop_sum = 0;                                     // sum of RSSI drop across the cohort
     for (int i = 0; i < _n_recon; i++) {
         if (!_recon[i].ref_valid) continue;               // only APs carried across an epoch
         if (_recon[i].seen_ms < _epoch_start_ms) continue; // must have been heard this epoch
         cohort++;
-        if ((int)_recon[i].rssi_ref - (int)_recon[i].rssi >= PWNPAL_RECEDE_DB) receding++;
+        int drop = (int)_recon[i].rssi_ref - (int)_recon[i].rssi; // + = weaker now (receding)
+        drop_sum += drop;
+        if (drop >= PWNPAL_RECEDE_DB) receding++;
     }
     int recede_pct = cohort ? (receding * 100) / cohort : 0;
+    // average dB the cohort moved (+ = receding, - = approaching). consensus cancels per-AP noise,
+    // so a small steady average catches a slow walk the >=RECEDE_DB count would miss.
+    int recede_avg = cohort ? (int)(drop_sum / cohort) : 0;
 
     char line[256];
     int n = snprintf(line, sizeof(line),
         "PWNPAL_EPOCH {\"n\":%lu,\"recon\":%d,\"attackable\":%d,\"chans\":%d,\"assoc\":%u,"
         "\"deauth\":%u,\"unicast\":%u,\"sta\":%d,\"hs\":%u,\"pmkid\":%u,\"miss\":%u,"
-        "\"dpmf\":%u,\"dnocli\":%u,\"dcloak\":%u,\"adds\":%u,\"recede\":%d,\"cohort\":%d}\n",
+        "\"dpmf\":%u,\"dnocli\":%u,\"dcloak\":%u,\"adds\":%u,\"recede\":%d,\"recede_avg\":%d,"
+        "\"cohort\":%d}\n",
         (unsigned long)_epoch_seq, _n_recon, attackable_n, _n_attack, (unsigned)_ep_assoc,
         (unsigned)_ep_deauth, (unsigned)_ep_unicast, _n_sta, (unsigned)_ep_hs,
         (unsigned)_ep_pmkid, (unsigned)_ep_miss, (unsigned)_ep_dpmf, (unsigned)_ep_dnocli,
-        (unsigned)_ep_dcloak, (unsigned)_ep_adds, recede_pct, cohort);
+        (unsigned)_ep_dcloak, (unsigned)_ep_adds, recede_pct, recede_avg, cohort);
     if (n > 0) Serial.write((const uint8_t*)line, (size_t)(n >= (int)sizeof(line) ? sizeof(line) - 1 : n));
     _epoch_seq++;
     _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = _ep_dcloak = _ep_adds = 0;

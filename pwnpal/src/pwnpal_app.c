@@ -133,8 +133,10 @@ typedef struct {
 // hear have faded (recede %, "we're leaving them") and how many new BSSIDs entered (adds, "new
 // stuff ahead"). either over threshold => moving. settle to parked only after a few quiet epochs
 // so a single ambiguous epoch doesn't flip us to siege mid-move. tune from telemetry.
-#define AUTO_RECEDE_PCT 30
-#define AUTO_ADDS_MOVE 6
+#define AUTO_RECEDE_PCT 30       // >= this % of the cohort faded >=RECEDE_DB -> moving
+#define AUTO_RECEDE_AVG_DB 3     // ...or the cohort's average fade this epoch is this many dB
+#define AUTO_RECEDE_MIN_COHORT 5 // ...but only trust recede with at least this many APs to average
+#define AUTO_ADDS_MOVE 6         // new BSSIDs/epoch that alone imply movement (fast case)
 #define AUTO_PARK_EPOCHS 2
 
 typedef enum {
@@ -1435,7 +1437,8 @@ static const char* capture_name(CaptureMode m); // defined below; used for the t
 // "PWNPAL_EPOCH {...}" — dev telemetry (fw v4): one CSV row per epoch for offline tuning
 static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
     int n = 0, recon = 0, att = 0, chans = 0, assoc = 0, deauth = 0, uni = 0, sta = 0, hs = 0,
-        pmkid = 0, miss = 0, dpmf = 0, dnocli = 0, dcloak = 0, adds = 0, recede = 0, cohort = 0;
+        pmkid = 0, miss = 0, dpmf = 0, dnocli = 0, dcloak = 0, adds = 0, recede = 0, recede_avg = 0,
+        cohort = 0;
     line_extract_int(line, "\"n\":", &n);
     line_extract_int(line, "\"recon\":", &recon);
     line_extract_int(line, "\"attackable\":", &att);
@@ -1452,7 +1455,8 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
     line_extract_int(line, "\"dcloak\":", &dcloak); // hidden APs de-cloaked (ESSID recovered)
     line_extract_int(line, "\"adds\":", &adds); // new BSSIDs this epoch (leading-edge movement)
     line_extract_int(line, "\"recede\":", &recede); // % of tracked APs fading (no-GPS movement)
-    line_extract_int(line, "\"cohort\":", &cohort); // APs the recede % was measured over
+    line_extract_int(line, "\"recede_avg\":", &recede_avg); // avg dB the cohort faded (+ = receding)
+    line_extract_int(line, "\"cohort\":", &cohort); // APs the recede stats were measured over
 
     uint32_t up = 0;
     char lat[16], lon[16], mode[8] = {0}, eff[8] = {0};
@@ -1471,7 +1475,11 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
             // ones (adds) => moving. instant to moving; needs AUTO_PARK_EPOCHS quiet epochs to
             // settle to parked (hysteresis biased toward wardrive). the tick loop folds this into
             // auto_moving whenever there's no GPS fix.
-            bool moving_epoch = (recede >= AUTO_RECEDE_PCT) || (adds >= AUTO_ADDS_MOVE);
+            // recede is only trustworthy with enough APs to average out RSSI noise; below that
+            // (e.g. biking, where APs don't persist) let the new-AP `adds` rate carry the verdict.
+            bool recede_ok = cohort >= AUTO_RECEDE_MIN_COHORT &&
+                             (recede >= AUTO_RECEDE_PCT || recede_avg >= AUTO_RECEDE_AVG_DB);
+            bool moving_epoch = recede_ok || (adds >= AUTO_ADDS_MOVE);
             if(moving_epoch) {
                 model->auto_ap_moving = true;
                 model->auto_park_streak = 0;
@@ -1491,15 +1499,15 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
         if(storage_file_size(f) == 0) {
             const char* h =
                 "uptime_s,lat,lon,epoch,recon,attackable,chans,assoc,deauth,unicast,sta,hs,pmkid,"
-                "miss,dpmf,dnocli,dcloak,mode,eff,moving,adds,recede,cohort\n";
+                "miss,dpmf,dnocli,dcloak,mode,eff,moving,adds,recede,recede_avg,cohort\n";
             storage_file_write(f, h, strlen(h));
         }
         char row[256];
         snprintf(
             row, sizeof(row),
-            "%lu,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d,%d,%d,%d\n",
+            "%lu,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d,%d,%d,%d,%d\n",
             (unsigned long)up, lat, lon, n, recon, att, chans, assoc, deauth, uni, sta, hs, pmkid,
-            miss, dpmf, dnocli, dcloak, mode, eff, moving, adds, recede, cohort);
+            miss, dpmf, dnocli, dcloak, mode, eff, moving, adds, recede, recede_avg, cohort);
         storage_file_write(f, row, strlen(row));
     }
     storage_file_close(f);

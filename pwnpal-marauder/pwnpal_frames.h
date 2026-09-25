@@ -3,6 +3,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 // does this beacon/probe-response require 802.11w PMF (RSN MFPR bit)? if so deauth is
 // futile, PMKID only. walks tagged params to the RSN IE (id 48) caps. bounds-checked,
@@ -118,4 +119,62 @@ static inline const uint8_t* pwnpal_ds_bssid(const uint8_t* f, int len, const ui
     }
     if(client) *client = cli;
     return bssid;
+}
+
+// --- per-client 4-way pairing (Phase B) -----------------------------------------------------
+// A captured "handshake" only cracks if M1 (ANonce) and M2 (SNonce+MIC) are from the SAME AP and
+// client and carry the SAME replay counter, close in time. Tracking a single anonce/m2 per AP is
+// wrong (M1 from client A + M2 from client B would falsely count). This is a global half table.
+typedef struct {
+    uint8_t ap_idx; // index into the recon table (AP)
+    uint8_t client[6]; // the non-AP station
+    uint8_t replay[8]; // EAPOL-Key replay counter (M1 and its M2 share it)
+    uint32_t ms; // millis() when this half was seen (for the pairing window + eviction)
+    bool is_m1; // true = ANonce half (M1), false = SNonce+MIC half (M2)
+    bool used; // slot occupied
+} PwnpalHsHalf;
+
+// Record one handshake half and check whether it completes a 4-way with a half already stored.
+// Returns true iff a matching OPPOSITE half (same ap/client/replay, within `window` ms) exists —
+// on which it clears every stored half for that (ap, client). Otherwise the half is upserted
+// (refresh same ap/client/kind, else take a free slot, else evict the oldest). Pure + testable.
+static inline bool pwnpal_hs_insert_match(
+    PwnpalHsHalf* t, int n, uint8_t ap_idx, const uint8_t* client, const uint8_t* replay,
+    bool is_m1, uint32_t now, uint32_t window) {
+    // 1. completing opposite half already present?
+    for(int i = 0; i < n; i++) {
+        if(!t[i].used || t[i].ap_idx != ap_idx || t[i].is_m1 == is_m1) continue;
+        if(memcmp(t[i].client, client, 6) != 0 || memcmp(t[i].replay, replay, 8) != 0) continue;
+        if((uint32_t)(now - t[i].ms) > window) continue; // stale -> not a pair
+        for(int j = 0; j < n; j++) // complete: drop all halves for this (ap, client)
+            if(t[j].used && t[j].ap_idx == ap_idx && memcmp(t[j].client, client, 6) == 0)
+                t[j].used = false;
+        return true;
+    }
+    // 2. no match: refresh an existing same-kind half, else a free slot, else evict oldest.
+    int slot = -1;
+    for(int i = 0; i < n; i++)
+        if(t[i].used && t[i].ap_idx == ap_idx && t[i].is_m1 == is_m1 &&
+           memcmp(t[i].client, client, 6) == 0) {
+            slot = i;
+            break;
+        }
+    if(slot < 0)
+        for(int i = 0; i < n; i++)
+            if(!t[i].used) {
+                slot = i;
+                break;
+            }
+    if(slot < 0) {
+        slot = 0;
+        for(int i = 1; i < n; i++)
+            if((uint32_t)(now - t[i].ms) > (uint32_t)(now - t[slot].ms)) slot = i;
+    }
+    t[slot].used = true;
+    t[slot].ap_idx = ap_idx;
+    memcpy(t[slot].client, client, 6);
+    memcpy(t[slot].replay, replay, 8);
+    t[slot].is_m1 = is_m1;
+    t[slot].ms = now;
+    return false;
 }

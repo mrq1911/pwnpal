@@ -304,6 +304,7 @@ void Pwnpal::endEpoch(uint32_t now) {
     if (_n_recon >= MAX_RECON) {
         _n_recon = 0;
         _n_sta = 0;
+        for (int i = 0; i < MAX_HS_HALFS; i++) _hs[i].used = false; // ap_idx now invalid
     }
 
     // snapshot RSSI as the reference for next epoch's recede check (survivors only; a flush leaves
@@ -1100,8 +1101,6 @@ bool Pwnpal::reportAP(const uint8_t* payload, int length, int rssi, int channel,
     _recon[_n_recon].rssi = r;  // first-seen; refreshed on later beacons
     _recon[_n_recon].attacks = 0;
     _recon[_n_recon].missed = false;
-    _recon[_n_recon].hs_anonce = false;
-    _recon[_n_recon].hs_m2 = false;
     _recon[_n_recon].pmf = pwnpal_rsn_requires_pmf(payload, length); // 802.11w -> no deauth
     _recon[_n_recon].last_rssi_ms = millis();  // the PWNPAL_AP line already carried it
     _recon[_n_recon].rssi_ref = r;             // seed; not a cohort member until it survives an epoch
@@ -1181,8 +1180,10 @@ bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int c
 
     has_fix = geoResolve(has_fix, &lat, &lon); // live fix, else recent last-known
 
-    // BSSID from the DS bits: derived up front so the streamed frame self-describes its pcap.
-    const uint8_t* bssid = pwnpal_ds_bssid(payload, length, nullptr);
+    // BSSID + client (the non-AP station) from the DS bits; BSSID up front so the streamed frame
+    // self-describes its pcap, client for per-(AP,client) 4-way pairing below.
+    const uint8_t* client = nullptr;
+    const uint8_t* bssid = pwnpal_ds_bssid(payload, length, &client);
 
     streamFrameHex(bssid, payload, length);              // full EAPOL frame -> pcap
 
@@ -1191,20 +1192,25 @@ bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int c
 
     int ri = reconIndex(bssid);
     const char* type = nullptr;
+    uint32_t now = millis();
 
-    if (k.key_ack && !k.key_mic) {
-        // M1 -- self-contained PMKID (crackable alone), and the ANonce for a 4-way pair.
+    // A real 4-way needs M1 (ANonce) and M2 (SNonce+MIC) from the SAME client with the SAME replay
+    // counter, close in time (see pwnpal_hs_insert_match). Pairing per-AP would wrongly fuse M1
+    // from one client with M2 from another. PMKID (M1, self-contained) needs no pairing.
+    if (k.key_ack && !k.key_mic) {                       // M1
         if (k.pmkid_nz) type = "pmkid";
-        else if (k.nonce_nz && ri >= 0) _recon[ri].hs_anonce = true; // bank the ANonce
-    } else if (k.key_ack && k.key_mic) {
-        if (k.nonce_nz && ri >= 0) _recon[ri].hs_anonce = true;      // M3 also carries ANonce
-    } else if (!k.key_ack && k.key_mic && !k.secure) {
-        if (k.nonce_nz && ri >= 0) _recon[ri].hs_m2 = true;          // M2: client SNonce + MIC
+        else if (k.nonce_nz && ri >= 0 &&
+                 pwnpal_hs_insert_match(_hs, MAX_HS_HALFS, (uint8_t)ri, client, k.replay, true, now,
+                                        HS_PAIR_WINDOW_MS))
+            type = "handshake";
+    } else if (!k.key_ack && k.key_mic && !k.secure) {   // M2
+        if (k.nonce_nz && ri >= 0 &&
+            pwnpal_hs_insert_match(_hs, MAX_HS_HALFS, (uint8_t)ri, client, k.replay, false, now,
+                                   HS_PAIR_WINDOW_MS))
+            type = "handshake";
     }
-
-    // a crackable 4-way needs BOTH the ANonce (M1/M3) and the M2 reply (SNonce+MIC). a lone M2
-    // is not enough, so we don't mark pwnd (and keep attacking) until the pair actually lands.
-    if (!type && ri >= 0 && _recon[ri].hs_anonce && _recon[ri].hs_m2) type = "handshake";
+    // M3/M4 are still streamed to the pcap above (offline tools can pair M2+M3), but we don't
+    // claim a handshake off them — only a verified M1+M2 pair marks pwnd.
 
     if (type && markPwnd(bssid)) {
         _epoch_pwnd = true;   // real activity this epoch -> keeps recon at full speed

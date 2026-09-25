@@ -24,9 +24,15 @@
 // last epoch counts as "receding". a high fraction receding across the board = we're moving.
 #define PWNPAL_RECEDE_DB 6
 
+// 4-way pairing: M1 and its M2 (same replay counter) must land within this window to count as a
+// real handshake. hcxdumptool uses 50 ms camping one channel; we hop, so allow a hop's slack.
+#define HS_PAIR_WINDOW_MS 300
+#define MAX_HS_HALFS 32 // half-handshakes tracked across all (AP, client) pairs (~24 B each)
+
 #include <Arduino.h>
 #include <esp_wifi.h>
 #include <LinkedList.h>
+#include "pwnpal_frames.h" // pure 802.11 parsers + PwnpalHsHalf (used by the class members below)
 
 // provided by Marauder (WiFiScan.h); redeclared so we compile if included first.
 extern "C" esp_err_t esp_wifi_80211_tx(wifi_interface_t ifx, const void* buffer,
@@ -90,6 +96,7 @@ class Pwnpal {
         _n_recon = 0;
         _n_pwnd_seen = 0;
         _n_sta = 0;
+        for(int i = 0; i < MAX_HS_HALFS; i++) _hs[i].used = false;
         _inactive_epochs = 0;  // a fresh scan starts at full recon speed
         _epoch_pwnd = false;
         _epoch_seq = 0;
@@ -197,8 +204,6 @@ class Pwnpal {
         uint8_t attacks; // active-mode assoc/deauth bursts aimed at this AP
         bool missed;     // already emitted a PWNPAL_MISS for it
         bool pmf;        // 802.11w PMF required (RSN MFPR) -> deauth is futile, PMKID only
-        bool hs_anonce;  // saw an ANonce (M1/M3) -> half of a crackable 4-way
-        bool hs_m2;      // saw the M2 reply (SNonce+MIC) -> the other half
         uint32_t last_rssi_ms; // millis() of the last PWNPAL_RSSI we streamed for it
         // movement sensing (no-GPS): compare RSSI epoch-over-epoch; if the APs we still hear are
         // fading across the board, we're receding from them -> moving.
@@ -216,6 +221,7 @@ class Pwnpal {
     int      _n_recon;
     uint8_t  _pwnd_seen[MAX_PWND][6];
     int      _n_pwnd_seen;
+    PwnpalHsHalf _hs[MAX_HS_HALFS]; // half-handshakes awaiting their pair (per AP+client+replay)
 
     // client stations sniffed from DATA frames for unicast deauth (both directions);
     // broadcast deauth is ignored by modern clients.

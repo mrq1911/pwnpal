@@ -223,6 +223,8 @@ typedef struct {
     uint8_t ap_clients[AP_MAX]; // associated clients the ESP tracks for this AP (live, fw>=6)
     uint8_t ap_attacks[AP_MAX]; // assoc/deauth bursts the ESP aimed at this AP (live, fw>=6)
     uint8_t ap_decloaked[AP_MAX]; // hidden ESSID recovered via de-cloak this session (list "D" mark)
+    uint32_t ap_pwned_tick[AP_MAX]; // tick_secs this AP was captured THIS session (0 = not/older);
+                                    // orders the Pwned list latest-first (session-only, not persisted)
 
     // every friend met (the browser reads this; persisted)
     FriendRec friends[FRIEND_MAX];
@@ -750,6 +752,7 @@ static int ap_get(PwnpalModel* model, const char* key, bool* is_new) {
     model->ap_clients[i] = 0; // recycled slot: fresh client/attack counters
     model->ap_attacks[i] = 0;
     model->ap_decloaked[i] = 0;
+    model->ap_pwned_tick[i] = 0;
     model->aps[i].lat = 1e9f; // no location until a geotagged line arrives
     model->aps[i].lon = 1e9f;
     model->aps[i].loc_rssi = -128; // reset for a recycled slot
@@ -1063,6 +1066,7 @@ static void pwnpal_handle_pwnd_line(PwnpalApp* app, const char* line) {
                 if(strcmp(via, "active") == 0) model->pwn_active++;
                 else model->pwn_passive++;
                 counted = true;
+                if(ai >= 0) model->ap_pwned_tick[ai] = model->tick_secs; // newest -> top of Pwned list
             }
             // record the capture on the AP regardless of the count gate (reflects what landed)
             if(ai >= 0) {
@@ -1947,19 +1951,29 @@ static uint16_t ap_filtered(const PwnpalModel* m, uint16_t* out) {
         if(m->list_filter == FilterWhitelist && !m->aps[i].whitelisted) continue;
         out[n++] = i;
     }
+    bool pwned = (m->list_filter == FilterPwned);
     for(uint16_t i = 1; i < n; i++) {
         uint16_t v = out[i];
         bool rv = ap_signal_recent(m, v);
         int16_t rssiv = m->aps[v].rssi;
         uint32_t sv = m->aps[v].first_seq;
+        uint32_t pv = m->ap_pwned_tick[v];
         int j = (int)i - 1;
         while(j >= 0) {
             uint16_t u = out[j];
-            bool ru = ap_signal_recent(m, u);
-            int16_t rssiu = m->aps[u].rssi;
-            // v outranks u: live over stale; else stronger RSSI; else earlier-discovered (stable)
-            bool v_first = (rv && !ru) ||
-                           (rv == ru && (rssiv > rssiu || (rssiv == rssiu && sv > m->aps[u].first_seq)));
+            bool v_first;
+            if(pwned) {
+                // Pwned list: latest capture (this session) first; then most-recently-discovered.
+                uint32_t pu = m->ap_pwned_tick[u];
+                v_first = (pv > pu) || (pv == pu && sv > m->aps[u].first_seq);
+            } else {
+                bool ru = ap_signal_recent(m, u);
+                int16_t rssiu = m->aps[u].rssi;
+                // v outranks u: live over stale; else stronger RSSI; else earlier-discovered (stable)
+                v_first = (rv && !ru) ||
+                          (rv == ru &&
+                           (rssiv > rssiu || (rssiv == rssiu && sv > m->aps[u].first_seq)));
+            }
             if(!v_first) break;
             out[j + 1] = out[j];
             j--;
@@ -2212,7 +2226,9 @@ static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
         }
         const char* name = a->ssid[0] ? a->ssid : a->bssid;
         bool pwned_view = model->list_filter == FilterPwned;
-        // left status icon: target = filled arrow, ignore = no-entry, de-cloak = D. name follows it.
+        bool ap_pwned = a->pmkid || a->handshake;
+        // left status icon (priority): target = filled arrow, ignore = no-entry, de-cloak = D,
+        // else a skull for a captured AP. skull is skipped in the pwned view (all rows are pwned).
         int cy = y - 3; // icon centre on the text line
         if(a->targeted) {
             // solid right-pointing triangle, tall base on the left tapering to an apex
@@ -2223,9 +2239,12 @@ static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
             canvas_draw_line(canvas, 2, cy + 2, 6, cy - 2);
         } else if(model->ap_decloaked[apidx]) {
             canvas_draw_str(canvas, 1, y, "D"); // hidden ESSID recovered via de-cloak
+        } else if(!pwned_view && ap_pwned) {
+            draw_skull(canvas, 1, cy); // captured
         }
         // only marked rows reserve the icon gutter; unmarked names hug the left for max width
-        bool marked = a->targeted || a->whitelisted || model->ap_decloaked[apidx];
+        bool marked = a->targeted || a->whitelisted || model->ap_decloaked[apidx] ||
+                      (!pwned_view && ap_pwned);
         int name_x = marked ? 10 : 2;
         // right cluster: pwned view = CRACK/cap; else signal bar hugs the edge with the client
         // count just to its LEFT (blank when no clients).
@@ -2245,11 +2264,6 @@ static void pwnpal_draw_aplist(Canvas* canvas, const PwnpalModel* model) {
                 snprintf(cc, sizeof(cc), "%u", (unsigned)model->ap_clients[apidx]);
                 right_x = bar_x - 4 - (int)canvas_string_width(canvas, cc);
                 canvas_draw_str(canvas, right_x, y, cc);
-            }
-            if(a->pmkid || a->handshake) { // captured -> skull; hollow eyes read at 7px
-                int kx = right_x - 3 - 7;
-                draw_skull(canvas, kx, cy);
-                right_x = kx;
             }
         }
         draw_str_trunc(canvas, name_x, y, name, right_x - name_x - 3);

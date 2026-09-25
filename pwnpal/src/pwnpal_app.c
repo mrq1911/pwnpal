@@ -129,10 +129,13 @@ typedef struct {
 // this long parked (or with no GPS fix).
 #define AUTO_MOVE_KM 0.02f
 #define AUTO_STATIONARY_SECS 45
-// GPS-independent movement fallback: discovering >= this many new APs per window = moving
-// (walking/biking keeps finding new APs; a parked spot's AP set goes stale).
-#define AUTO_AP_WINDOW_SECS 15
-#define AUTO_AP_MOVE_COUNT 4
+// GPS-independent movement (no fix): the firmware reports, per epoch, how much the APs we still
+// hear have faded (recede %, "we're leaving them") and how many new BSSIDs entered (adds, "new
+// stuff ahead"). either over threshold => moving. settle to parked only after a few quiet epochs
+// so a single ambiguous epoch doesn't flip us to siege mid-move. tune from telemetry.
+#define AUTO_RECEDE_PCT 30
+#define AUTO_ADDS_MOVE 6
+#define AUTO_PARK_EPOCHS 2
 
 typedef enum {
     CaptureWardrive = 0, // recon-only fast sweep, record what's heard, no attack (for moving)
@@ -252,6 +255,9 @@ typedef struct {
     uint32_t ap_rate_ref; // aps_session snapshot for the GPS-independent movement fallback
     uint32_t ap_rate_ref_secs; // tick of that snapshot
     bool auto_moving; // computed each tick: moving recently (drives Auto's wardrive vs siege)
+    // no-GPS movement verdict from the firmware's per-epoch recede/adds signal (used when no fix)
+    bool auto_ap_moving; // last epoch said we're moving (RSSI receding / new APs)
+    uint8_t auto_park_streak; // consecutive "parked" epochs; settles auto_ap_moving off after a few
     uint8_t last_cap_eff; // last effective capture mode pushed to the ESP (change-triggered resend)
     bool confirm_reset; // modal: "reset settings?" confirmation
 
@@ -1429,7 +1435,7 @@ static const char* capture_name(CaptureMode m); // defined below; used for the t
 // "PWNPAL_EPOCH {...}" — dev telemetry (fw v4): one CSV row per epoch for offline tuning
 static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
     int n = 0, recon = 0, att = 0, chans = 0, assoc = 0, deauth = 0, uni = 0, sta = 0, hs = 0,
-        pmkid = 0, miss = 0, dpmf = 0, dnocli = 0, dcloak = 0;
+        pmkid = 0, miss = 0, dpmf = 0, dnocli = 0, dcloak = 0, adds = 0, recede = 0, cohort = 0;
     line_extract_int(line, "\"n\":", &n);
     line_extract_int(line, "\"recon\":", &recon);
     line_extract_int(line, "\"attackable\":", &att);
@@ -1444,6 +1450,9 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
     line_extract_int(line, "\"dpmf\":", &dpmf); // deauths skipped: PMF-protected
     line_extract_int(line, "\"dnocli\":", &dnocli); // deauths skipped: no client
     line_extract_int(line, "\"dcloak\":", &dcloak); // hidden APs de-cloaked (ESSID recovered)
+    line_extract_int(line, "\"adds\":", &adds); // new BSSIDs this epoch (leading-edge movement)
+    line_extract_int(line, "\"recede\":", &recede); // % of tracked APs fading (no-GPS movement)
+    line_extract_int(line, "\"cohort\":", &cohort); // APs the recede % was measured over
 
     uint32_t up = 0;
     char lat[16], lon[16], mode[8] = {0}, eff[8] = {0};
@@ -1458,6 +1467,18 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
             lon[sizeof(lon) - 1] = '\0';
             // set mode vs effective mode (Auto -> wardrive/siege) + the movement decision, so
             // "is Auto switching correctly?" is answerable offline (moving should => eff=WDRV).
+            // no-GPS movement verdict: APs fading across the board (recede) or a burst of new
+            // ones (adds) => moving. instant to moving; needs AUTO_PARK_EPOCHS quiet epochs to
+            // settle to parked (hysteresis biased toward wardrive). the tick loop folds this into
+            // auto_moving whenever there's no GPS fix.
+            bool moving_epoch = (recede >= AUTO_RECEDE_PCT) || (adds >= AUTO_ADDS_MOVE);
+            if(moving_epoch) {
+                model->auto_ap_moving = true;
+                model->auto_park_streak = 0;
+            } else if(model->auto_park_streak < 255) {
+                model->auto_park_streak++;
+                if(model->auto_park_streak >= AUTO_PARK_EPOCHS) model->auto_ap_moving = false;
+            }
             strncpy(mode, capture_name(model->capture_mode), sizeof(mode) - 1);
             strncpy(eff, capture_name(effective_capture(model)), sizeof(eff) - 1);
             moving = model->auto_moving ? 1 : 0;
@@ -1470,14 +1491,15 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
         if(storage_file_size(f) == 0) {
             const char* h =
                 "uptime_s,lat,lon,epoch,recon,attackable,chans,assoc,deauth,unicast,sta,hs,pmkid,"
-                "miss,dpmf,dnocli,dcloak,mode,eff,moving\n";
+                "miss,dpmf,dnocli,dcloak,mode,eff,moving,adds,recede,cohort\n";
             storage_file_write(f, h, strlen(h));
         }
-        char row[224];
+        char row[256];
         snprintf(
-            row, sizeof(row), "%lu,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d\n",
+            row, sizeof(row),
+            "%lu,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d,%d,%d,%d\n",
             (unsigned long)up, lat, lon, n, recon, att, chans, assoc, deauth, uni, sta, hs, pmkid,
-            miss, dpmf, dnocli, dcloak, mode, eff, moving);
+            miss, dpmf, dnocli, dcloak, mode, eff, moving, adds, recede, cohort);
         storage_file_write(f, row, strlen(row));
     }
     storage_file_close(f);
@@ -3455,19 +3477,17 @@ static void pwnpal_timer_callback(void* ctx) {
                             model->last_move_secs = model->tick_secs;
                         }
                     }
-                    // AP-churn fallback: enough new APs since the last window -> moving
-                    if(model->tick_secs - model->ap_rate_ref_secs >= AUTO_AP_WINDOW_SECS) {
-                        if(model->persona->aps_session - model->ap_rate_ref >= AUTO_AP_MOVE_COUNT)
-                            model->last_move_secs = model->tick_secs;
-                        model->ap_rate_ref = model->persona->aps_session;
-                        model->ap_rate_ref_secs = model->tick_secs;
-                    }
-                    // moving = a move was stamped within the last AUTO_STATIONARY_SECS
-                    model->auto_moving = (model->last_move_secs != 0) &&
-                                         (model->tick_secs - model->last_move_secs <
-                                          AUTO_STATIONARY_SECS);
+                    bool gps_moving = (model->last_move_secs != 0) &&
+                                      (model->tick_secs - model->last_move_secs <
+                                       AUTO_STATIONARY_SECS);
+                    // GPS is authoritative when we have a fix; with no fix, ride the firmware's
+                    // per-epoch recede/adds verdict (auto_ap_moving) instead. this is what makes
+                    // bag/pocket walks work — the old cumulative-AP fallback went blind on them.
+                    model->auto_moving = model->gps_fix ? gps_moving : model->auto_ap_moving;
                 } else {
                     model->auto_moving = false;
+                    model->auto_ap_moving = false;
+                    model->auto_park_streak = 0;
                 }
                 // Home stat panel auto-reverts to the persona voice after a quiet spell.
                 if(model->stat_page != StatPageMood &&
@@ -3722,6 +3742,8 @@ static PwnpalApp* pwnpal_app_alloc(void) {
             model->ap_rate_ref = 0;
             model->ap_rate_ref_secs = 0;
             model->auto_moving = false;
+            model->auto_ap_moving = false;
+            model->auto_park_streak = 0;
             model->last_cap_eff = 0xFF; // sentinel: forces the first -mode push
             model->confirm_reset = false;
             model->confirm_exit = false;

@@ -20,6 +20,10 @@
 // can watch fix acquisition / log time-to-first-fix without flooding serial.
 #define PWNPAL_GPS_EMIT_MS 3000
 
+// no-GPS movement sensing: an AP still in range whose RSSI fell at least this many dB since the
+// last epoch counts as "receding". a high fraction receding across the board = we're moving.
+#define PWNPAL_RECEDE_DB 6
+
 #include <Arduino.h>
 #include <esp_wifi.h>
 #include <LinkedList.h>
@@ -90,7 +94,8 @@ class Pwnpal {
         _epoch_pwnd = false;
         _epoch_seq = 0;
         _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = 0;
-        _ep_dpmf = _ep_dnocli = _ep_dcloak = 0;
+        _ep_dpmf = _ep_dnocli = _ep_dcloak = _ep_adds = 0;
+        _epoch_start_ms = 0;
         _saver_idle = false;       // duty-cycle state; _saver level itself is kept (set by args)
         _saver_phase_ms = 0;
         _saver_hb_ms = 0;
@@ -172,6 +177,8 @@ class Pwnpal {
     uint16_t _ep_hs, _ep_pmkid, _ep_miss;        // outcomes this epoch
     uint16_t _ep_dpmf, _ep_dnocli;               // deauths skipped: PMF-protected / no client
     uint16_t _ep_dcloak;                          // hidden APs de-cloaked (ESSID recovered) this epoch
+    uint16_t _ep_adds;                            // BSSIDs newly added to recon this epoch (leading-edge movement)
+    uint32_t _epoch_start_ms;                     // millis() the current epoch's recon began (cohort gate)
 
     // targeting + whitelist. target set -> only that BSSID attacked; whitelisted BSSIDs
     // never attacked (still recon'd).
@@ -193,6 +200,11 @@ class Pwnpal {
         bool hs_anonce;  // saw an ANonce (M1/M3) -> half of a crackable 4-way
         bool hs_m2;      // saw the M2 reply (SNonce+MIC) -> the other half
         uint32_t last_rssi_ms; // millis() of the last PWNPAL_RSSI we streamed for it
+        // movement sensing (no-GPS): compare RSSI epoch-over-epoch; if the APs we still hear are
+        // fading across the board, we're receding from them -> moving.
+        int8_t  rssi_ref;  // RSSI snapshot at the last epoch boundary
+        bool    ref_valid; // rssi_ref carried over a full epoch (excludes just-appeared APs)
+        uint32_t seen_ms;  // millis() this AP was last actually heard (unthrottled)
     };
     // dense areas top 80 APs; 64 dropped ~16. 128 covers a busy neighbourhood.
     static const int MAX_RECON = 128;

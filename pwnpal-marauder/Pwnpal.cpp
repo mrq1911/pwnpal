@@ -260,18 +260,32 @@ void Pwnpal::endEpoch(uint32_t now) {
     int attackable_n = 0;
     for (int i = 0; i < _n_recon; i++)
         if (attackable(_recon[i])) attackable_n++;
-    char line[200];
+
+    // no-GPS movement: of the APs we tracked since last epoch AND still hear, how many faded
+    // >=RECEDE_DB? a high fraction = we're receding from them = moving. only still-heard APs are
+    // in the cohort, so the attack-phase channel camping (which silences off-channel APs) can't
+    // fake it. `adds` is the leading edge (new BSSIDs) for the fast case where APs don't persist.
+    int cohort = 0, receding = 0;
+    for (int i = 0; i < _n_recon; i++) {
+        if (!_recon[i].ref_valid) continue;               // only APs carried across an epoch
+        if (_recon[i].seen_ms < _epoch_start_ms) continue; // must have been heard this epoch
+        cohort++;
+        if ((int)_recon[i].rssi_ref - (int)_recon[i].rssi >= PWNPAL_RECEDE_DB) receding++;
+    }
+    int recede_pct = cohort ? (receding * 100) / cohort : 0;
+
+    char line[256];
     int n = snprintf(line, sizeof(line),
         "PWNPAL_EPOCH {\"n\":%lu,\"recon\":%d,\"attackable\":%d,\"chans\":%d,\"assoc\":%u,"
         "\"deauth\":%u,\"unicast\":%u,\"sta\":%d,\"hs\":%u,\"pmkid\":%u,\"miss\":%u,"
-        "\"dpmf\":%u,\"dnocli\":%u,\"dcloak\":%u}\n",
+        "\"dpmf\":%u,\"dnocli\":%u,\"dcloak\":%u,\"adds\":%u,\"recede\":%d,\"cohort\":%d}\n",
         (unsigned long)_epoch_seq, _n_recon, attackable_n, _n_attack, (unsigned)_ep_assoc,
         (unsigned)_ep_deauth, (unsigned)_ep_unicast, _n_sta, (unsigned)_ep_hs,
         (unsigned)_ep_pmkid, (unsigned)_ep_miss, (unsigned)_ep_dpmf, (unsigned)_ep_dnocli,
-        (unsigned)_ep_dcloak);
+        (unsigned)_ep_dcloak, (unsigned)_ep_adds, recede_pct, cohort);
     if (n > 0) Serial.write((const uint8_t*)line, (size_t)(n >= (int)sizeof(line) ? sizeof(line) - 1 : n));
     _epoch_seq++;
-    _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = _ep_dcloak = 0;
+    _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = _ep_dcloak = _ep_adds = 0;
 
     if (_epoch_pwnd) _inactive_epochs = 0;
     else if (_inactive_epochs < 255) _inactive_epochs++;
@@ -284,6 +298,14 @@ void Pwnpal::endEpoch(uint32_t now) {
         _n_recon = 0;
         _n_sta = 0;
     }
+
+    // snapshot RSSI as the reference for next epoch's recede check (survivors only; a flush leaves
+    // none, and freshly-added APs stay ref_valid=false until they live through a full epoch).
+    for (int i = 0; i < _n_recon; i++) {
+        _recon[i].rssi_ref = _recon[i].rssi;
+        _recon[i].ref_valid = true;
+    }
+    _epoch_start_ms = now;
 
     _phase = PHASE_RECON;
     _phase_ms = now;
@@ -1030,6 +1052,7 @@ bool Pwnpal::reportAP(const uint8_t* payload, int length, int rssi, int channel,
     int known = reconIndex(bssid);
     if (known >= 0) {                                       // re-heard
         if (r != 0) _recon[known].rssi = r;                // keep attackable()/targeting live
+        _recon[known].seen_ms = millis();                  // unthrottled last-heard, for recede sensing
         // late ESSID: adopt the newly-revealed name, push the naming frame into the pcap,
         // re-announce so a keymat-only capture becomes crackable.
         if (_recon[known].ssid[0] == '\0' && ssid[0] != '\0') {
@@ -1074,6 +1097,10 @@ bool Pwnpal::reportAP(const uint8_t* payload, int length, int rssi, int channel,
     _recon[_n_recon].hs_m2 = false;
     _recon[_n_recon].pmf = pwnpal_rsn_requires_pmf(payload, length); // 802.11w -> no deauth
     _recon[_n_recon].last_rssi_ms = millis();  // the PWNPAL_AP line already carried it
+    _recon[_n_recon].rssi_ref = r;             // seed; not a cohort member until it survives an epoch
+    _recon[_n_recon].ref_valid = false;
+    _recon[_n_recon].seen_ms = millis();
+    _ep_adds++;                                 // leading-edge movement: a BSSID just entered range
     // Publish the entry before bumping the count (rx-callback writer vs loop reader).
     __sync_synchronize();
     _n_recon++;

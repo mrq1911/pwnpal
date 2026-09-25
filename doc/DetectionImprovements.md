@@ -29,7 +29,25 @@ later phase builds on it.
 
 ---
 
-## Phase A — Extract EAPOL parsing into `pwnpal_frames.h` + host tests
+## Status
+
+- **Phase A — DONE** (`4f30d2e`): EAPOL parsing extracted to `pwnpal_frames.h`
+  (`pwnpal_eapol_locate` / `pwnpal_eapol_key` / `pwnpal_ds_bssid`); `reportHandshake` rewired
+  with no behaviour change; `tests/test_eapol.cpp` added; `run.sh` now runs ASan+UBSan.
+- **Phase B — DONE, awaiting field validation** (`a890a2d`): per-(AP, client, replay) 4-way
+  pairing (`pwnpal_hs_insert_match`, 300 ms window, 32-slot half-table); per-AP
+  `hs_anonce`/`hs_m2` removed. `tests/test_pairing.cpp` green.
+- **► NEXT: field-validate A+B on hardware** (protocol at the bottom) before starting Phase C —
+  every reported `handshake` pcap must actually crack / be accepted by `hcxpcaptool`, with zero
+  cross-client pairs.
+- **Phase C / D / E — not started.**
+
+Unit-test status: `tests/run.sh` green under `-fsanitize=address,undefined` (test_eapol,
+test_pairing, test_frames, test_geo). Firmware compiles at 67% flash, +1.3 KB RAM.
+
+---
+
+## Phase A — Extract EAPOL parsing into `pwnpal_frames.h` + host tests  ✅ DONE (`4f30d2e`)
 
 Goal: the frame logic of `reportHandshake()` becomes pure, tested code. No
 behaviour change to the device yet.
@@ -72,7 +90,7 @@ capture session unchanged from before the rewire.
 
 ---
 
-## Phase B — Per-client handshake pairing (the correctness fix)
+## Phase B — Per-client handshake pairing (the correctness fix)  ✅ DONE (`a890a2d`), validating
 
 Goal: a "handshake" only counts when M1 and M2 are from the **same client**,
 carry the **same replay counter**, and land within a **time window** —

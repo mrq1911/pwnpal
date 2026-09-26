@@ -29,8 +29,19 @@ first (ported from CrowPanel-Flock-You / FlipDeFlock):
 - **Known Flock OUI** as transmitter (addr2) — *medium*; as receiver (addr1, non-multicast) or
   BSSID (addr3), or a hidden-SSID beacon from a Flock OUI — *low*
 
-The OUI table (`PWNPAL_FLOCK_OUIS`, ~31 prefixes) lives in `pwnpal_frames.h`; update it as the
-community list grows.
+The OUI table (`PWNPAL_FLOCK_OUIS`, ~32 prefixes incl. Flock's own `b4:1e:52`) lives in
+`pwnpal_frames.h`; update it as the community list grows. `00:03:7f` (Qualcomm Atheros) is in some
+forks' lists but deliberately omitted — it's a generic radio-vendor OUI that floods false positives.
+
+## Limitations
+
+- **2.4 GHz only.** The ESP32 sniffs 2.4 GHz; cameras that also beacon on 5 GHz (ch. ~157) are a
+  blind spot. Inherent to the radio.
+- **MAC randomization / locally-administered MACs.** Newer cameras (reported 2026) use non-IEEE,
+  locally-administered MACs to defeat OUI lists. Those fall to the **IE fingerprint** (randomization
+  can't hide the probe's shape) and the **SSID substring** (e.g. `Flock Camera net.` still contains
+  `flock`) — both implemented — but an OUI-only detector would miss them.
+- Signature lists **drift**; treat detection as an indicator and confirm by eye.
 
 ## Output
 

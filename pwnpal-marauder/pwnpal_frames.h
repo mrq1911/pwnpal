@@ -184,7 +184,11 @@ static inline bool pwnpal_hs_insert_match(
 // the wildcard-probe Information-Element fingerprint that survives MAC randomization. All passive
 // (listen-only). Detections are INDICATORS, not proof — an OUI-only hit needs eyeball confirming.
 
-// Flock infrastructure OUI prefixes (datasets/NitekryDPaul_wifi_ouis.md). Update as the list grows.
+// Flock infrastructure OUI prefixes (NitekryDPaul + DeFlock/flock-you community lists). Update as
+// it grows. NOTE: 00:03:7f (Qualcomm Atheros QCA9377) appears in some forks' lists — deliberately
+// omitted here: it's a generic radio-vendor OUI on countless devices, so it floods false positives.
+// Newer cameras also use locally-administered (non-IEEE) MACs to dodge OUI lists entirely — the
+// probe IE fingerprint and SSID keyword paths below are what catch those.
 static const uint8_t PWNPAL_FLOCK_OUIS[][3] = {
     {0x70, 0xc9, 0x4e}, {0x3c, 0x91, 0x80}, {0xd8, 0xf3, 0xbc}, {0x80, 0x30, 0x49},
     {0xb8, 0x35, 0x32}, {0x14, 0x5a, 0xfc}, {0x74, 0x4c, 0xa1}, {0x08, 0x3a, 0x88},
@@ -193,7 +197,7 @@ static const uint8_t PWNPAL_FLOCK_OUIS[][3] = {
     {0xd0, 0x39, 0x57}, {0xe8, 0xd0, 0xfc}, {0xe0, 0x4f, 0x43}, {0xb8, 0x1e, 0xa4},
     {0x70, 0x08, 0x94}, {0x58, 0x8e, 0x81}, {0xec, 0x1b, 0xbd}, {0x3c, 0x71, 0xbf},
     {0x58, 0x00, 0xe3}, {0x90, 0x35, 0xea}, {0x5c, 0x93, 0xa2}, {0x64, 0x6e, 0x69},
-    {0x48, 0x27, 0xea}, {0xa4, 0xcf, 0x12}, {0x82, 0x6b, 0xf2},
+    {0x48, 0x27, 0xea}, {0xa4, 0xcf, 0x12}, {0x82, 0x6b, 0xf2}, {0xb4, 0x1e, 0x52}, // Flock's own MA-L
 };
 #define PWNPAL_FLOCK_NOUI ((int)(sizeof(PWNPAL_FLOCK_OUIS) / 3))
 

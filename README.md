@@ -42,6 +42,10 @@ Flipper app, no PC or Raspberry Pi required.
   client-aware so effort lands where clients actually are.
 - **De-cloak** — recovers hidden ESSIDs from clients' (re)association requests, turning an
   otherwise-uncrackable capture into a crackable one.
+- **Flock / ALPR spotting** — passively flags Flock Safety and other ALPR surveillance cameras
+  by their Wi-Fi signatures (known OUIs, SSID keywords, and a probe-request IE fingerprint that
+  beats MAC randomization), geotags them to `flock.csv`, and shouts on a hit. Listen-only,
+  togglable, on the same wardrive pass. See [doc/FlockDetection.md](doc/FlockDetection.md).
 - **GPS wardrive** — geotags APs and writes a WiGLE-compatible `wardrive.csv`; on-device
   distance/bearing to a saved home.
 - **Capture modes** — *Wardrive* (fast sweep, PMKID-only), *Roam* (sweep + deauth on the

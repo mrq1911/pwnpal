@@ -308,6 +308,29 @@ def main():
         tag="pwnpal_obj.reportDecloak(")
     steps += d
 
+    # 3b2b. Flock/ALPR: passive signature match on EVERY mgmt frame in pwnpal mode (all subtypes
+    # reach here before any per-subtype return). no return -> beacons/probes still flow to reportAP
+    # and peer handling below. gated by -flock inside reportFlock (off => no-op, no TX ever).
+    t, d = insert_before(
+        t,
+        "  if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PROBE) ||",
+        "  if ((wifi_scan_obj.currentScanMode == WIFI_SCAN_PWNPAL) &&\n"
+        "      (type == WIFI_PKT_MGMT)) {\n"
+        "    #ifdef HAS_GPS\n"
+        "      bool pf_fix = gps_obj.getFixStatus() && gps_obj.getNumSats() >= 4;\n"
+        "      double pf_lat = pf_fix ? atof(gps_obj.getLat().c_str()) : 0.0;\n"
+        "      double pf_lon = pf_fix ? atof(gps_obj.getLon().c_str()) : 0.0;\n"
+        "    #else\n"
+        "      bool pf_fix = false; double pf_lat = 0.0; double pf_lon = 0.0;\n"
+        "    #endif\n"
+        "    pwnpal_obj.reportFlock(snifferPacket->payload, len,\n"
+        "                              snifferPacket->rx_ctrl.rssi,\n"
+        "                              snifferPacket->rx_ctrl.channel,\n"
+        "                              pf_fix, pf_lat, pf_lon);\n"
+        "  }\n",
+        tag="pwnpal_obj.reportFlock(")
+    steps += d
+
     # 3c. recon: dedup non-pwngrid beacons into PWNPAL_AP lines. sits inside
     # if(type==MGMT)->if(payload[0]==0x80) after the pwngrid mac_match return, so peers
     # never reach it. len here is FCS-stripped (-4).

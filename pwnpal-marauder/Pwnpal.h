@@ -87,6 +87,11 @@ class Pwnpal {
     void reportDecloak(const uint8_t* payload, int length, int rssi, int channel,
                        bool has_fix, double lat, double lon);
 
+    // passive Flock/ALPR camera detection: match mgmt frames against known signatures and emit
+    // PWNPAL_FLOCK once per device. gated by -flock (off -> no-op). listen-only, no TX.
+    void reportFlock(const uint8_t* payload, int length, int rssi, int channel,
+                     bool has_fix, double lat, double lon);
+
     // true once a persona is loaded.
     bool ready() const { return _ready; }
 
@@ -97,11 +102,12 @@ class Pwnpal {
         _n_pwnd_seen = 0;
         _n_sta = 0;
         for(int i = 0; i < MAX_HS_HALFS; i++) _hs[i].used = false;
+        _n_flock_seen = 0;
         _inactive_epochs = 0;  // a fresh scan starts at full recon speed
         _epoch_pwnd = false;
         _epoch_seq = 0;
         _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = 0;
-        _ep_dpmf = _ep_dnocli = _ep_dcloak = _ep_adds = 0;
+        _ep_dpmf = _ep_dnocli = _ep_dcloak = _ep_adds = _ep_flock = 0;
         _epoch_start_ms = 0;
         _saver_idle = false;       // duty-cycle state; _saver level itself is kept (set by args)
         _saver_phase_ms = 0;
@@ -132,6 +138,7 @@ class Pwnpal {
     bool     _deauth_policy;
     bool     _assoc_policy;   // associate (solicit PMKID) without deauth — "PMKID-only"
     bool     _wardrive;       // recon-only fast sweep for moving capture (no attack dwell)
+    bool     _flock_detect;   // passive Flock/ALPR camera spotting (-flock)
     uint8_t  _session_id[6];  // Addr3, stable per persona
 
     // Channel hopping
@@ -185,6 +192,7 @@ class Pwnpal {
     uint16_t _ep_dpmf, _ep_dnocli;               // deauths skipped: PMF-protected / no client
     uint16_t _ep_dcloak;                          // hidden APs de-cloaked (ESSID recovered) this epoch
     uint16_t _ep_adds;                            // BSSIDs newly added to recon this epoch (leading-edge movement)
+    uint16_t _ep_flock;                           // Flock/ALPR devices spotted this epoch
     uint32_t _epoch_start_ms;                     // millis() the current epoch's recon began (cohort gate)
 
     // targeting + whitelist. target set -> only that BSSID attacked; whitelisted BSSIDs
@@ -222,6 +230,9 @@ class Pwnpal {
     uint8_t  _pwnd_seen[MAX_PWND][6];
     int      _n_pwnd_seen;
     PwnpalHsHalf _hs[MAX_HS_HALFS]; // half-handshakes awaiting their pair (per AP+client+replay)
+    static const int MAX_FLOCK_SEEN = 64; // Flock devices deduped per session (emit PWNPAL_FLOCK once)
+    uint8_t  _flock_seen[MAX_FLOCK_SEEN][6];
+    int      _n_flock_seen;
 
     // client stations sniffed from DATA frames for unicast deauth (both directions);
     // broadcast deauth is ignored by modern clients.

@@ -178,3 +178,184 @@ static inline bool pwnpal_hs_insert_match(
     t[slot].ms = now;
     return false;
 }
+
+// --- Flock Safety / ALPR camera detection (passive) -----------------------------------------
+// Signatures ported from CrowPanel-Flock-You / FlipDeFlock: known infra OUIs, SSID keywords, and
+// the wildcard-probe Information-Element fingerprint that survives MAC randomization. All passive
+// (listen-only). Detections are INDICATORS, not proof — an OUI-only hit needs eyeball confirming.
+
+// Flock infrastructure OUI prefixes (NitekryDPaul + DeFlock/flock-you community lists). Update as
+// it grows. NOTE: 00:03:7f (Qualcomm Atheros QCA9377) appears in some forks' lists — deliberately
+// omitted here: it's a generic radio-vendor OUI on countless devices, so it floods false positives.
+// Newer cameras also use locally-administered (non-IEEE) MACs to dodge OUI lists entirely — the
+// probe IE fingerprint and SSID keyword paths below are what catch those.
+static const uint8_t PWNPAL_FLOCK_OUIS[][3] = {
+    {0x70, 0xc9, 0x4e}, {0x3c, 0x91, 0x80}, {0xd8, 0xf3, 0xbc}, {0x80, 0x30, 0x49},
+    {0xb8, 0x35, 0x32}, {0x14, 0x5a, 0xfc}, {0x74, 0x4c, 0xa1}, {0x08, 0x3a, 0x88},
+    {0x9c, 0x2f, 0x9d}, {0xc0, 0x35, 0x32}, {0x94, 0x08, 0x53}, {0xe4, 0xaa, 0xea},
+    {0xf4, 0x6a, 0xdd}, {0xf8, 0xa2, 0xd6}, {0x24, 0xb2, 0xb9}, {0x00, 0xf4, 0x8d},
+    {0xd0, 0x39, 0x57}, {0xe8, 0xd0, 0xfc}, {0xe0, 0x4f, 0x43}, {0xb8, 0x1e, 0xa4},
+    {0x70, 0x08, 0x94}, {0x58, 0x8e, 0x81}, {0xec, 0x1b, 0xbd}, {0x3c, 0x71, 0xbf},
+    {0x58, 0x00, 0xe3}, {0x90, 0x35, 0xea}, {0x5c, 0x93, 0xa2}, {0x64, 0x6e, 0x69},
+    {0x48, 0x27, 0xea}, {0xa4, 0xcf, 0x12}, {0x82, 0x6b, 0xf2}, {0xb4, 0x1e, 0x52}, // Flock's own MA-L
+};
+#define PWNPAL_FLOCK_NOUI ((int)(sizeof(PWNPAL_FLOCK_OUIS) / 3))
+
+// detection method, high confidence first (the app reports the name)
+typedef enum {
+    FLOCK_NONE = 0,
+    FLOCK_PROBE_IE,   // wildcard probe + IE fingerprint (beats MAC randomization) - high
+    FLOCK_PROBE_OUI,  // wildcard probe from a known OUI - high
+    FLOCK_SSID,       // SSID contains flock/flck - medium
+    FLOCK_OUI_ADDR2,  // known OUI as transmitter - medium
+    FLOCK_OUI_ADDR1,  // known OUI as receiver - low
+    FLOCK_HIDDEN_OUI, // hidden-SSID beacon/probe-resp from a known OUI - low
+    FLOCK_OUI_ADDR3,  // known OUI as BSSID - low
+} FlockMethod;
+
+static inline bool pwnpal_oui_is_flock(const uint8_t* mac) {
+    for(int i = 0; i < PWNPAL_FLOCK_NOUI; i++)
+        if(mac[0] == PWNPAL_FLOCK_OUIS[i][0] && mac[1] == PWNPAL_FLOCK_OUIS[i][1] &&
+           mac[2] == PWNPAL_FLOCK_OUIS[i][2])
+            return true;
+    return false;
+}
+
+// case-insensitive: does `hay` contain any of flock / flck?
+static inline bool pwnpal_ssid_is_flock(const char* hay) {
+    static const char* kw[] = {"flock", "flck"};
+    for(int w = 0; w < 2; w++) {
+        const char* k = kw[w];
+        for(const char* h = hay; *h; h++) {
+            int i = 0;
+            while(k[i]) {
+                char a = h[i], b = k[i];
+                if(a >= 'A' && a <= 'Z') a += 32;
+                if(a != b) break;
+                i++;
+            }
+            if(!k[i]) return true;
+        }
+    }
+    return false;
+}
+
+// find tagged IE `tag` walking TLVs from `start`; returns value ptr (sets *vlen) or NULL.
+static inline const uint8_t* pwnpal_ie(const uint8_t* f, int len, int start, uint8_t tag, int* vlen) {
+    int p = start;
+    while(p + 2 <= len) {
+        int id = f[p], l = f[p + 1];
+        if(p + 2 + l > len) break;
+        if(id == tag) {
+            if(vlen) *vlen = l;
+            return f + p + 2;
+        }
+        p += 2 + l;
+    }
+    return NULL;
+}
+
+// The Flock wildcard-probe IE fingerprint: an exact ordered TLV sequence with two vendor tags.
+static inline bool pwnpal_flock_probe_ie_sig(const uint8_t* f, int len) {
+    static const uint8_t LITEON[] = {0x50, 0x6f, 0x9a, 0x16, 0x03, 0x01, 0x03};
+    static const uint8_t WPA[] = {0x00, 0x50, 0xf2, 0x08, 0x00, 0x00, 0x00};
+    // expected: tag, is_vendor, vendor payload (first 7 bytes)
+    struct {
+        uint8_t tag;
+        const uint8_t* vp;
+    } exp[] = {
+        {0, NULL}, {2, NULL}, {12, NULL}, {127, NULL}, {221, LITEON},
+        {45, NULL}, {191, NULL}, {221, WPA},
+    };
+    int p = 24; // probe-request IEs start right after the 24-byte mgmt header (no fixed params)
+    for(int e = 0; e < 8; e++) {
+        if(p + 2 > len) return false;
+        int id = f[p], l = f[p + 1];
+        if(p + 2 + l > len) return false;
+        if(id != exp[e].tag) return false;
+        if(e == 0 && l != 0) return false; // tag 0 must be the wildcard (zero-length) SSID
+        if(exp[e].vp) {
+            if(l < 7) return false;
+            for(int b = 0; b < 7; b++)
+                if(f[p + 2 + b] != exp[e].vp[b]) return false;
+        }
+        p += 2 + l;
+    }
+    return true;
+}
+
+// Classify a management frame. Returns the highest-confidence method (FLOCK_NONE if not Flock)
+// and, via *bssid_out, the address that identifies the device for logging.
+static inline FlockMethod pwnpal_flock_match(const uint8_t* f, int len, const uint8_t** bssid_out) {
+    if(len < 24) return FLOCK_NONE;
+    if(((f[0] >> 2) & 0x3) != 0) return FLOCK_NONE; // management frames only
+    uint8_t subtype = (f[0] >> 4) & 0xf;
+    const uint8_t* addr1 = f + 4;  // receiver
+    const uint8_t* addr2 = f + 10; // transmitter
+    const uint8_t* addr3 = f + 16; // BSSID
+    if(bssid_out) *bssid_out = addr2;
+    bool oui2 = pwnpal_oui_is_flock(addr2);
+    bool oui1 = !(addr1[0] & 0x01) && pwnpal_oui_is_flock(addr1); // skip multicast/broadcast RX
+    bool oui3 = pwnpal_oui_is_flock(addr3);
+
+    if(subtype == 4) { // probe request (no fixed params -> IEs at 24)
+        int slen = -1;
+        const uint8_t* ssid = pwnpal_ie(f, len, 24, 0, &slen);
+        bool wildcard = (ssid != NULL) && slen == 0;
+        // IE fingerprint is the strongest tell and works even with a randomized MAC.
+        if(wildcard && pwnpal_flock_probe_ie_sig(f, len)) return FLOCK_PROBE_IE;
+        if(oui2) return wildcard ? FLOCK_PROBE_OUI : FLOCK_OUI_ADDR2;
+        if(oui1) {
+            if(bssid_out) *bssid_out = addr1;
+            return FLOCK_OUI_ADDR1;
+        }
+        return FLOCK_NONE;
+    }
+
+    if(subtype == 8 || subtype == 5) { // beacon / probe response (IEs at 36)
+        int slen = -1;
+        const uint8_t* ssid = pwnpal_ie(f, len, 36, 0, &slen);
+        if(ssid && slen > 0) {
+            char tmp[33];
+            int n = slen > 32 ? 32 : slen;
+            for(int i = 0; i < n; i++) tmp[i] = (char)ssid[i];
+            tmp[n] = '\0';
+            if(pwnpal_ssid_is_flock(tmp)) return FLOCK_SSID;
+        }
+        bool hidden = (ssid == NULL) || slen == 0 || ssid[0] == 0;
+        if(oui2) return FLOCK_OUI_ADDR2;
+        if(oui3) {
+            if(bssid_out) *bssid_out = addr3;
+            return hidden ? FLOCK_HIDDEN_OUI : FLOCK_OUI_ADDR3;
+        }
+        if(oui1) {
+            if(bssid_out) *bssid_out = addr1;
+            return FLOCK_OUI_ADDR1;
+        }
+    }
+    return FLOCK_NONE;
+}
+
+// short label for a method (for the PWNPAL_FLOCK line + logs)
+static inline const char* pwnpal_flock_method_name(FlockMethod m) {
+    switch(m) {
+    case FLOCK_PROBE_IE: return "probe-ie";
+    case FLOCK_PROBE_OUI: return "probe-oui";
+    case FLOCK_SSID: return "ssid";
+    case FLOCK_OUI_ADDR2: return "oui-tx";
+    case FLOCK_OUI_ADDR1: return "oui-rx";
+    case FLOCK_HIDDEN_OUI: return "hidden-oui";
+    case FLOCK_OUI_ADDR3: return "oui-bssid";
+    default: return "none";
+    }
+}
+
+static inline const char* pwnpal_flock_confidence(FlockMethod m) {
+    switch(m) {
+    case FLOCK_PROBE_IE:
+    case FLOCK_PROBE_OUI: return "high";
+    case FLOCK_SSID:
+    case FLOCK_OUI_ADDR2: return "medium";
+    default: return "low";
+    }
+}

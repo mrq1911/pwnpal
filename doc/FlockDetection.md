@@ -37,7 +37,8 @@ community list grows.
   DeFlock/WiGLE-friendly. `PWNPAL_EPOCH` also carries a per-epoch `flock` count.
 - **On-device list**: once at least one device is spotted, **OK on the Flock-detect menu row**
   opens a scrollable list (mac/ssid + `H`/`M`/`L` confidence + signal); OK on a row shows a detail
-  (mac, method+confidence, channel, rssi, age, coords). The device table is session-only and uses
+  (mac, method+confidence, channel, rssi, age, coords), and OK there shows a `geo:` **map QR** for
+  geotagged hits. The device table is session-only and uses
   the **same overflow rule as the AP table** — capped at `FLOCK_MAX` (64), recycling the
   least-recently-seen slot; the count shows `+` once devices have been recycled.
 
@@ -60,8 +61,6 @@ no reflash, no mode-switch.
   firmware still get basic detection. Note the tradeoff vs the native mode here: the full-signature
   detection above **requires flashing the pwnpal firmware**; the scrape mode would be flash-free
   but limited to what Marauder prints (OUI/SSID, no IE fingerprint).
-- **Map QR on the flock detail** — the detail screen shows coordinates as text today; a `geo:` QR
-  (like the AP/friend detail) would let you jump straight to a map. Deferred only to bound this PR.
 - **Signature upkeep** — periodic refresh of `PWNPAL_FLOCK_OUIS` and the IE fingerprint from the
   DeFlock / Flock-You datasets.
 - **Confidence surfacing** — show method/confidence per hit in the UI so low-confidence OUI-only

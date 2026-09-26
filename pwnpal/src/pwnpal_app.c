@@ -193,6 +193,7 @@ typedef enum {
     ScreenFriendQr, // QR of a friend's last location
     ScreenFlockList, // spotted Flock/ALPR devices
     ScreenFlockDetail, // one Flock device + map QR
+    ScreenFlockQr, // QR of a Flock device's location
     ScreenStats,
     ScreenAbout,
 } Screen;
@@ -2738,14 +2739,50 @@ static void pwnpal_draw_flockdetail(Canvas* canvas, const PwnpalModel* model) {
     snprintf(l, sizeof(l), "%ddBm  %s", fr->rssi, age);
     canvas_draw_str(canvas, 40, 44, l);
     if(fr->lat < 1e8f) {
-        char cbuf[16];
-        fmt_coord(fr->lat, cbuf, sizeof(cbuf));
-        snprintf(l, sizeof(l), "@ %s", cbuf);
+        char latb[16], lonb[16];
+        fmt_coord(fr->lat, latb, sizeof(latb));
+        fmt_coord(fr->lon, lonb, sizeof(lonb));
+        snprintf(l, sizeof(l), "%s, %s", latb, lonb);
         canvas_draw_str(canvas, 2, 55, l);
-        fmt_coord(fr->lon, cbuf, sizeof(cbuf));
-        canvas_draw_str(canvas, 2, 63, cbuf);
+        // OK-map hint (small disc + "map"), centred, like the AP/friend detail
+        const char* h = "map";
+        int gw = 7 + 2 + (int)canvas_string_width(canvas, h);
+        int gx = (FLIPPER_SCREEN_WIDTH - gw) / 2;
+        canvas_draw_disc(canvas, gx + 3, 61, 3);
+        canvas_draw_str(canvas, gx + 9, 63, h);
     } else {
         canvas_draw_str(canvas, 2, 57, "no fix (see flock.csv)");
+    }
+}
+
+// QR of a Flock device's location (a geo: URI); reuses the shared ap_qr buffer.
+static void pwnpal_draw_flock_qr(Canvas* canvas, const PwnpalModel* model) {
+    canvas_clear(canvas);
+    const FlockRec* fr = &model->flock[model->detail_flock];
+    if(model->ap_qr_ok) {
+        int size = qrcodegen_getSize(model->ap_qr);
+        int scale = (FLIPPER_SCREEN_HEIGHT - 2) / size;
+        if(scale < 1) scale = 1;
+        int px = size * scale;
+        int oy = (FLIPPER_SCREEN_HEIGHT - px) / 2;
+        for(int y = 0; y < size; y++)
+            for(int x = 0; x < size; x++)
+                if(qrcodegen_getModule(model->ap_qr, x, y))
+                    canvas_draw_box(canvas, 2 + x * scale, oy + y * scale, scale, scale);
+        int tx = 2 + px + 5;
+        int tw = FLIPPER_SCREEN_WIDTH - tx - 2;
+        canvas_set_font(canvas, FontPrimary);
+        draw_str_trunc(canvas, tx, 12, fr->ssid[0] ? fr->ssid : "Flock", tw);
+        canvas_set_font(canvas, FontSecondary);
+        char cbuf[16];
+        fmt_coord(fr->lat, cbuf, sizeof(cbuf));
+        canvas_draw_str(canvas, tx, 30, cbuf);
+        fmt_coord(fr->lon, cbuf, sizeof(cbuf));
+        canvas_draw_str(canvas, tx, 42, cbuf);
+        canvas_draw_str(canvas, tx, 56, "scan me");
+    } else {
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str(canvas, 4, 32, "no location for device");
     }
 }
 
@@ -2977,6 +3014,7 @@ static void pwnpal_draw_callback(Canvas* canvas, void* ctx) {
     case ScreenFriendQr: pwnpal_draw_friend_qr(canvas, model); return;
     case ScreenFlockList: pwnpal_draw_flocklist(canvas, model); return;
     case ScreenFlockDetail: pwnpal_draw_flockdetail(canvas, model); return;
+    case ScreenFlockQr: pwnpal_draw_flock_qr(canvas, model); return;
     case ScreenStats: pwnpal_draw_stats(canvas, model); return;
     case ScreenAbout: pwnpal_draw_about(canvas, model); return;
     case ScreenHome:
@@ -3699,7 +3737,38 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
                 true);
             return true;
         }
+        if(event->key == InputKeyOk) {
+            // OK: QR of this device's location (a geo: URI) to scan with a phone, if geotagged.
+            with_view_model(
+                app->view, PwnpalModel * model,
+                {
+                    const FlockRec* fr = &model->flock[model->detail_flock];
+                    if(fr->lat < 1e8f) {
+                        char lats[16];
+                        char lons[16];
+                        char url[64];
+                        uint8_t tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(4)];
+                        fmt_coord(fr->lat, lats, sizeof(lats));
+                        fmt_coord(fr->lon, lons, sizeof(lons));
+                        snprintf(url, sizeof(url), "geo:%s,%s", lats, lons);
+                        model->ap_qr_ok = qrcodegen_encodeText(
+                            url, tmp, model->ap_qr, qrcodegen_Ecc_LOW, 1, 4, qrcodegen_Mask_AUTO,
+                            true);
+                        model->screen = ScreenFlockQr;
+                    }
+                },
+                true);
+            return true;
+        }
         return true;
+
+    case ScreenFlockQr:
+        if(event->key == InputKeyBack) {
+            with_view_model(
+                app->view, PwnpalModel * model, { model->screen = ScreenFlockDetail; }, true);
+            return true;
+        }
+        return true; // swallow everything else on the QR screen
 
     case ScreenStats:
         if(event->key == InputKeyBack) {

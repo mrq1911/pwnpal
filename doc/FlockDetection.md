@@ -8,6 +8,11 @@ not proof** — an OUI-only hit needs eyeballing.
 Toggle: **Menu → Flock detect** (on by default; persisted in `home.bin` v7). The setting rides to
 the ESP as `-flock 0|1`; off = the firmware skips the check entirely (no `PWNPAL_FLOCK`, no cost).
 
+Caveat: dedup is per-MAC, and cameras that **randomize their MAC** present a fresh address each
+probe — so the IE-fingerprint path can log the same physical camera several times and inflate the
+count. That's inherent to randomization (every prefix-based detector has it); treat the count as
+"detections", not a device census.
+
 ## How it works (Wi-Fi)
 
 The ESP already sniffs every management frame in promiscuous mode across channels (the pwnpal

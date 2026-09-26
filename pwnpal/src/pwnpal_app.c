@@ -317,7 +317,6 @@ typedef struct {
     bool triangulate; // on-device location estimate + sample logging (persisted)
     bool flock_detect; // passive Flock/ALPR camera spotting via WiFi signatures (persisted)
     uint16_t flock_count; // distinct Flock devices seen this session (may exceed the table -> "+")
-    char last_flock[18]; // MAC of the most recent Flock hit (for the persona shout)
     uint32_t flock_secs; // tick_secs of the last Flock hit (brief home-screen shout)
     FlockRec flock[FLOCK_MAX]; // browsable spotted-device table (session-only)
     uint16_t flock_n; // entries currently in flock[]
@@ -1680,8 +1679,6 @@ static void pwnpal_handle_flock_line(PwnpalApp* app, const char* line) {
                 }
             }
             if(fnew && model->flock_count < 0xffff) model->flock_count++;
-            strncpy(model->last_flock, mac, sizeof(model->last_flock) - 1);
-            model->last_flock[sizeof(model->last_flock) - 1] = '\0';
             model->flock_secs = model->tick_secs;
         },
         true);

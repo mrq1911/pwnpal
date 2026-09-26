@@ -3,6 +3,15 @@
 Versions continue this repo's tag lineage (the original flipagotchi released up to
 `v2.1.1`); `v3.0.0` is the first **pwnpal** release.
 
+## Unreleased
+
+### Added
+- **Passive Flock / ALPR detection** — spots Flock Safety and other ALPR cameras by their Wi-Fi
+  signatures (known OUIs, `flock`/`flck` SSIDs, and a wildcard-probe IE fingerprint that beats MAC
+  randomization) on the same wardrive pass. Togglable (Menu → Flock detect, on by default),
+  listen-only. Hits blink + shout, log to `flock.csv` (DeFlock/WiGLE-friendly), and are browsable
+  on-device (list → detail → map QR). See [doc/FlockDetection.md](doc/FlockDetection.md).
+
 ## v3.0.0 — pwnpal
 
 First release under the pwnpal name: the Flipper + an ESP32 Marauder-fork board become a

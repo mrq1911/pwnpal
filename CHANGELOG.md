@@ -12,8 +12,10 @@ full, self-contained pwnagotchi.
 - **Social pwngrid peer** — broadcasts a pwnagotchi-compatible beacon, sniffs and remembers
   other units, and grows a persona that levels up with encounters.
 - **Real capture** — WPA/WPA2 4-way handshakes and PMKID, saved as per-BSSID `.pcap` for
-  hashcat `-m 22000`. A capture is only marked crackable once a genuine EAPOL pair
-  (ANonce + M2) or a self-contained PMKID is in hand.
+  hashcat `-m 22000`. Pwns are counted pwnagotchi-style (a PMKID, or an M1+M2 / M2+M3 for one
+  client), and a separate on-device check flags which captures are *genuinely crackable* — a
+  replay-matched pair or a PMKID, the same rule hcxpcapngtool applies — shown as **✓/CRACK** in
+  the browser and a `crack` tally in Stats.
 - **De-cloak** — recovers hidden ESSIDs from clients' (re)association requests and splices
   them into the capture, turning otherwise-uncrackable loot crackable. De-cloaked APs are
   marked in the list and logged to `decloak.csv`.
@@ -21,7 +23,8 @@ full, self-contained pwnagotchi.
   distance/bearing to a saved home.
 - **Capture modes** — Wardrive, Roam, Siege, and Auto (switches by movement).
 - **On-device browser** — recent APs and pwned APs with live signal bars, per-AP client
-  counts, target/ignore/de-cloak markers, a pwned skull, and a per-AP detail + map QR.
+  counts, target/ignore/de-cloak markers, a pwned skull, a crackable **CRACK** flag, and a
+  per-AP detail + map QR.
 - **Battery saver** — light/deep duty-cycling with auto-off on external power.
 - **Firmware-match nudge** — the app recommends a reflash when the board's firmware build
   lags the app.

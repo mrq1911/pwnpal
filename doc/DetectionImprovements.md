@@ -34,12 +34,19 @@ later phase builds on it.
 - **Phase A — DONE** (`4f30d2e`): EAPOL parsing extracted to `pwnpal_frames.h`
   (`pwnpal_eapol_locate` / `pwnpal_eapol_key` / `pwnpal_ds_bssid`); `reportHandshake` rewired
   with no behaviour change; `tests/test_eapol.cpp` added; `run.sh` now runs ASan+UBSan.
-- **Phase B — DONE, awaiting field validation** (`a890a2d`): per-(AP, client, replay) 4-way
-  pairing (`pwnpal_hs_insert_match`, 300 ms window, 32-slot half-table); per-AP
-  `hs_anonce`/`hs_m2` removed. `tests/test_pairing.cpp` green.
-- **► NEXT: field-validate A+B on hardware** (protocol at the bottom) before starting Phase C —
-  every reported `handshake` pcap must actually crack / be accepted by `hcxpcaptool`, with zero
-  cross-client pairs.
+- **Phase B — DONE** (`a890a2d`): per-(AP, client, replay) 4-way pairing (32-slot table).
+- **Phase B.1 — count vs crackable split** (this change): field validation showed strict
+  pairing made the *count* feel low (and exposed that the flashed board was likely stale — the
+  `PWNPAL_HS ` prefix length regressed to 13 in the rebrand, so a from-HEAD build would drop
+  every handshake line; fixed here). Rather than a strict count, we now emit **two verdicts** per
+  frame (`pwnpal_hs_note`): **loose** — pwnagotchi/bettercap `Complete()`: PMKID, or M2 with an
+  M1/M3, no replay/time match → drives the pwn count / skull; **strict** — a replay-matched M1+M2
+  **or M2+M3** in a 2 s window, or a PMKID → drives a per-AP *crackable* flag (`PWNPAL_CRACK`),
+  shown as ✓/CRACK in the browser and a `crack` tally in Stats. Adds the previously-missing
+  **M2+M3** crackable case. `tests/test_pairing.cpp` rewritten (loose vs strict, M2+M3, PMKID,
+  replay mismatch, window, `rc_dec`).
+- **► NEXT: field-validate on hardware** — with the count now loose, confirm the `crack` tally
+  matches `hcxpcapngtool` on the pulled pcaps (few false ✓, few missed ✓), then Phase C.
 - **Phase C / D / E — not started.**
 
 Unit-test status: `tests/run.sh` green under `-fsanitize=address,undefined` (test_eapol,

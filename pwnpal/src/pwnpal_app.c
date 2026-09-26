@@ -50,7 +50,7 @@ typedef enum {
 // persisted AP table
 #define AP_DB_PATH "/ext/apps_data/pwnpal/aps.bin"
 #define AP_DB_MAGIC 0x50414E46u // 'FNAP'
-#define AP_DB_VERSION 4 // v4: ApRec gained triangulation centroid sums
+#define AP_DB_VERSION 5 // v5: ApRec gained the strict `crackable` flag (loose skull vs crackable ✓)
 
 // persisted friends table
 #define FRIEND_DB_PATH "/ext/apps_data/pwnpal/friends.bin"
@@ -96,7 +96,8 @@ typedef struct {
     int16_t rssi; // most recent
     bool has_essid; // named SSID seen (a 22000 hashline needs it)
     bool pmkid; // captured a PMKID (M1)
-    bool handshake; // captured a 4-way handshake (M2)
+    bool handshake; // captured a 4-way handshake (loose, pwnagotchi-style: lights the skull)
+    bool crackable; // firmware verified a genuinely crackable pair/PMKID (strict, hcx-equivalent)
     bool missed; // firmware reported a MISS (attacked, nothing caught)
     bool whitelisted; // user: never attack this one
     bool targeted; // user: focus the hunt on this one
@@ -1568,12 +1569,39 @@ static void pwnpal_handle_gps_line(PwnpalApp* app, const char* line) {
     storage_file_free(f);
 }
 
+// "PWNPAL_CRACK <bssid> <pmkid|4way>" — the firmware verified a genuinely crackable capture for
+// this AP (strict, hcx-equivalent). Sets the AP's crackable flag so the browser shows the ✓/CRACK.
+// The AP already exists: strict implies loose, and the loose PWNPAL_PWND that created it precedes
+// (or accompanies) this line.
+static void pwnpal_handle_crack_line(PwnpalApp* app, const char* line) {
+    const char* p = line + 13; // past "PWNPAL_CRACK "
+    char bssid[18] = {0};
+    size_t i = 0;
+    while(p[i] && p[i] != ' ' && i < sizeof(bssid) - 1) {
+        bssid[i] = p[i];
+        i++;
+    }
+    if(i == 0) return;
+    char key[13];
+    bssid_key(key, bssid);
+    with_view_model(
+        app->view,
+        PwnpalModel * model,
+        {
+            int ai = ap_find(model, key);
+            if(ai >= 0) model->aps[ai].crackable = true;
+        },
+        true); // redraw: the ✓/CRACK label may flip
+}
+
 static void pwnpal_process_line(PwnpalApp* app, const char* line) {
     // PWND and PEER share the PWNPAL_P prefix, so compare both fully
     if(strncmp(line, "PWNPAL_PEER ", 12) == 0) {
         pwnpal_handle_peer_line(app, line);
     } else if(strncmp(line, "PWNPAL_PWND ", 12) == 0) {
         pwnpal_handle_pwnd_line(app, line);
+    } else if(strncmp(line, "PWNPAL_CRACK ", 13) == 0) {
+        pwnpal_handle_crack_line(app, line);
     } else if(strncmp(line, "PWNPAL_HS ", 10) == 0) {
         pwnpal_handle_hs_line(app, line);
     } else if(strncmp(line, "PWNPAL_AP ", 10) == 0) {
@@ -1850,9 +1878,11 @@ static void pwnpal_draw_last_pwnd(Canvas* canvas, const PwnpalModel* model) {
 
 // ---- shared little helpers for the menu / browser screens ----
 
-// True once this AP has enough to crack: a named ESSID + a PMKID or handshake.
+// True once this AP is genuinely crackable: a named ESSID (the 22000 salt) + the firmware's strict
+// verdict (a replay-matched pair or a PMKID). NOT the loose `handshake` bool, which only means we
+// counted a pwn pwnagotchi-style; the ✓/CRACK label must match what hashcat would actually take.
 static bool ap_crackable(const ApRec* a) {
-    return a->has_essid && (a->pmkid || a->handshake);
+    return a->has_essid && a->crackable;
 }
 
 // RSSI -> 0..50 bar units (total=50): -90 dBm (floor) empty .. -40 dBm full.
@@ -2355,10 +2385,17 @@ static void pwnpal_draw_apdetail(Canvas* canvas, const PwnpalModel* model) {
         l, sizeof(l), "clients %u   atk %u", (unsigned)model->ap_clients[model->detail_ap],
         (unsigned)model->ap_attacks[model->detail_ap]);
     canvas_draw_str(canvas, 2, 41, l);
-    // Crackability as a plain-language formula (what we have -> whether it cracks).
+    // Crackability as a plain-language formula. The firmware's strict verdict (a->crackable) is the
+    // real "will hashcat take it": a replay-matched pair or a PMKID. The loose `handshake` bool only
+    // says we counted a pwn, so a caught-but-unpaired AP reads "no pair", not "CRACKABLE".
     const char* key = a->pmkid ? "PMKID" : a->handshake ? "HS" : NULL;
-    if(a->has_essid && key)
-        snprintf(l, sizeof(l), "ESSID + %s = CRACKABLE", key);
+    const char* meth = a->pmkid ? "PMKID" : "4-way";
+    if(a->crackable && a->has_essid)
+        snprintf(l, sizeof(l), "%s + ESSID = CRACKABLE", meth);
+    else if(a->crackable)
+        snprintf(l, sizeof(l), "%s, need ESSID", meth);
+    else if(key && a->has_essid)
+        snprintf(l, sizeof(l), "%s + ESSID, no pair", key);
     else if(key)
         snprintf(l, sizeof(l), "%s but no ESSID", key);
     else if(a->has_essid)
@@ -2523,10 +2560,11 @@ static void pwnpal_draw_stats(Canvas* canvas, const PwnpalModel* model) {
         l, sizeof(l), "epoch %lu   up %02lu:%02lu:%02lu", (unsigned long)p->epoch,
         (unsigned long)(up / 3600), (unsigned long)((up % 3600) / 60), (unsigned long)(up % 60));
     canvas_draw_str(canvas, 2, 21, l);
-    uint16_t np = 0, nh = 0; // captures split by type (pmkid / handshake)
+    uint16_t np = 0, nh = 0, nc = 0; // captures: pmkid / handshake (loose) / crackable (strict)
     for(uint16_t i = 0; i < model->ap_count; i++) {
         if(model->aps[i].pmkid) np++;
         if(model->aps[i].handshake) nh++;
+        if(ap_crackable(&model->aps[i])) nc++;
     }
     snprintf(
         l, sizeof(l), "pwnd %lu (%lu)   aps %u", (unsigned long)p->pwnd_run,
@@ -2541,10 +2579,10 @@ static void pwnpal_draw_stats(Canvas* canvas, const PwnpalModel* model) {
     } else {
         canvas_draw_str(canvas, 2, 51, "no fix");
     }
-    // tx beacons + captures by type (P=pmkid, H=handshake)
+    // captures: crackable (strict ✓) leads so it never clips; then loose P=pmkid/H=handshake, tx.
     snprintf(
-        l, sizeof(l), "tx %lu  caps P%u/H%u", (unsigned long)model->adv_sent_count, (unsigned)np,
-        (unsigned)nh);
+        l, sizeof(l), "crack %u  P%u/H%u  tx %lu", (unsigned)nc, (unsigned)np, (unsigned)nh,
+        (unsigned long)model->adv_sent_count);
     canvas_draw_str(canvas, 2, 61, l);
 }
 

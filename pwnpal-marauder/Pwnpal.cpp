@@ -225,6 +225,7 @@ void Pwnpal::reset() {
     _lastfix_ms = 0;
     _n_recon = 0;
     _n_pwnd_seen = 0;
+    _n_crack_seen = 0;
     _n_sta = 0;
     _inactive_epochs = 0;
     _epoch_pwnd = false;
@@ -868,6 +869,24 @@ void Pwnpal::emitPwnd(const uint8_t* bssid, const char* ssid,
     Serial.write((const uint8_t*)line, n);
 }
 
+bool Pwnpal::markCrack(const uint8_t* bssid) {
+    for (int i = 0; i < _n_crack_seen; i++)
+        if (memcmp(_crack_seen[i], bssid, 6) == 0) return false;  // already flagged crackable
+    if (_n_crack_seen >= MAX_PWND) return false;                  // table full: stop
+    memcpy(_crack_seen[_n_crack_seen++], bssid, 6);
+    return true;
+}
+
+void Pwnpal::emitCrack(const uint8_t* bssid, const char* method) {
+    char mac[18];
+    fmt_mac(mac, bssid);
+    char line[48];
+    int n = snprintf(line, sizeof(line), "PWNPAL_CRACK %s %s\n", mac, method);
+    if (n < 0) return;
+    if (n >= (int)sizeof(line)) n = sizeof(line) - 1;
+    Serial.write((const uint8_t*)line, n);
+}
+
 void Pwnpal::deauthAP(const uint8_t* bssid) {
     uint8_t f[26];
     memcpy(f, DEAUTH_TEMPLATE, sizeof(f));
@@ -951,7 +970,7 @@ void Pwnpal::streamFrameHex(const uint8_t* bssid, const uint8_t* frame, int leng
     // "PWNPAL_HS "+bssid+' '+hex+'\n'. static (rx-callback only) so a big frame doesn't
     // blow the stack; single write so it can't interleave with the main loop's prints.
     static char line[800];
-    const int PREFIX = 13;                          // "PWNPAL_HS "
+    const int PREFIX = sizeof("PWNPAL_HS ") - 1;    // 10; the app parses the bssid at this offset
     int max_bytes = (int)(sizeof(line) - PREFIX - 12 - 1 - 1) / 2;  // bssid+sp+nl
     if (length > max_bytes) length = max_bytes;     // truncate huge frames (ESSID near front survives)
     int p = 0;
@@ -1191,26 +1210,34 @@ bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int c
     if (!pwnpal_eapol_key(payload, length, eo, &k)) return true; // EAPOL but not a key / truncated
 
     int ri = reconIndex(bssid);
-    const char* type = nullptr;
     uint32_t now = millis();
 
-    // A real 4-way needs M1 (ANonce) and M2 (SNonce+MIC) from the SAME client with the SAME replay
-    // counter, close in time (see pwnpal_hs_insert_match). Pairing per-AP would wrongly fuse M1
-    // from one client with M2 from another. PMKID (M1, self-contained) needs no pairing.
-    if (k.key_ack && !k.key_mic) {                       // M1
-        if (k.pmkid_nz) type = "pmkid";
-        else if (k.nonce_nz && ri >= 0 &&
-                 pwnpal_hs_insert_match(_hs, MAX_HS_HALFS, (uint8_t)ri, client, k.replay, true, now,
-                                        HS_PAIR_WINDOW_MS))
-            type = "handshake";
-    } else if (!k.key_ack && k.key_mic && !k.secure) {   // M2
-        if (k.nonce_nz && ri >= 0 &&
-            pwnpal_hs_insert_match(_hs, MAX_HS_HALFS, (uint8_t)ri, client, k.replay, false, now,
-                                   HS_PAIR_WINDOW_MS))
-            type = "handshake";
+    // Classify the 4-way message from the key_info bits:
+    //   M1 = ack, !mic          (ANonce; may carry a PMKID)
+    //   M2 = !ack, mic, !secure (SNonce + MIC)
+    //   M3 = ack, mic, secure   (ANonce again, replay = M1 + 1)
+    //   M4 = !ack, mic, secure  (nonce ~zero) -> ignored
+    int msg = 0;
+    if (k.key_ack && !k.key_mic) msg = 1;
+    else if (!k.key_ack && k.key_mic && !k.secure) msg = 2;
+    else if (k.key_ack && k.key_mic && k.secure) msg = 3;
+
+    // Two verdicts, deliberately decoupled (see pwnpal_hs_note):
+    //   type != null  -> loose, pwnagotchi/bettercap-style: PMKID, or M2 with an M1/M3. lights the
+    //                    skull / count so the number matches what a pwnagotchi would claim.
+    //   crackable     -> strict, hcxpcapngtool-equivalent: a replay-matched M1+M2 or M2+M3 in
+    //                    window, or a PMKID. drives the per-AP crackable ✓.
+    const char* type = nullptr;
+    bool crackable = false;
+    if (msg == 1 && k.pmkid_nz) {                        // PMKID: self-contained, no recon/pairing
+        type = "pmkid";
+        crackable = true;
+    } else if (msg && k.nonce_nz && ri >= 0) {           // M1/M2/M3 with a real nonce, known AP
+        PwnpalHsVerdict v = pwnpal_hs_note(_hs, MAX_HS_HALFS, (uint8_t)ri, client, msg, false,
+                                           k.replay, now, HS_CRACK_WINDOW_MS);
+        if (v.loose) type = "handshake";
+        crackable = v.strict;
     }
-    // M3/M4 are still streamed to the pcap above (offline tools can pair M2+M3), but we don't
-    // claim a handshake off them — only a verified M1+M2 pair marks pwnd.
 
     if (type && markPwnd(bssid)) {
         _epoch_pwnd = true;   // real activity this epoch -> keeps recon at full speed
@@ -1224,5 +1251,10 @@ bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int c
         streamSyntheticBeacon(bssid, ssid);
         emitPwnd(bssid, ssid, type, channel, rssi, has_fix, lat, lon, active);
     }
+    // strict crackability is independent of the looser count and can be reached on a later frame
+    // (e.g. an M3 completing an earlier M2); emit it once per AP so the app can flag the ✓.
+    if (crackable && markCrack(bssid))
+        emitCrack(bssid, (type && strcmp(type, "pmkid") == 0) ? "pmkid" : "4way");
+
     return true;                                         // EAPOL -> save to pcap
 }

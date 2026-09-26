@@ -121,60 +121,115 @@ static inline const uint8_t* pwnpal_ds_bssid(const uint8_t* f, int len, const ui
     return bssid;
 }
 
-// --- per-client 4-way pairing (Phase B) -----------------------------------------------------
-// A captured "handshake" only cracks if M1 (ANonce) and M2 (SNonce+MIC) are from the SAME AP and
-// client and carry the SAME replay counter, close in time. Tracking a single anonce/m2 per AP is
-// wrong (M1 from client A + M2 from client B would falsely count). This is a global half table.
+// --- per-client 4-way tracking (Phase B, two verdicts) --------------------------------------
+// One table answers both questions the app asks about an (AP, client):
+//   loose  — pwnagotchi/bettercap Handshake.Complete(): a PMKID, or an M2 (SNonce+MIC) seen
+//            together with an ANonce source (M1 or M3), with NO replay/time match. Drives the pwn
+//            count / skull, so the number matches what a pwnagotchi would claim.
+//   strict — hcxpcapngtool-equivalent: a genuinely crackable pair — M1+M2 with the SAME replay
+//            counter, or M2+M3 (M3's replay is M1's + 1), within `window` ms — or a PMKID. Drives
+//            the per-AP "crackable" ✓.
+// We keep the most recent ANonce half (M1, or M3 normalised down to its M1 replay) and the most
+// recent M2 half per (AP, client), plus a sticky "seen" bitmask, and re-check on every frame.
+// Keeping one half of each kind (not every half) can miss a strict pair only under rare
+// same-kind interleavings before the opposite kind arrives; loose is unaffected (sticky bits).
+enum { PWNPAL_M1 = 1, PWNPAL_M2 = 2, PWNPAL_M3 = 4, PWNPAL_PMKID = 8 };
+
 typedef struct {
+    bool used; // slot occupied
     uint8_t ap_idx; // index into the recon table (AP)
     uint8_t client[6]; // the non-AP station
-    uint8_t replay[8]; // EAPOL-Key replay counter (M1 and its M2 share it)
-    uint32_t ms; // millis() when this half was seen (for the pairing window + eviction)
-    bool is_m1; // true = ANonce half (M1), false = SNonce+MIC half (M2)
-    bool used; // slot occupied
-} PwnpalHsHalf;
+    uint32_t ms; // millis() of the last touch (LRU eviction)
+    uint8_t seen; // loose: OR of PWNPAL_M1/M2/M3/PMKID ever seen for this (AP, client)
+    bool a_used; // strict: an ANonce half is stored (M1, or M3 normalised)
+    uint8_t a_replay[8]; // its replay counter (M3 stored as M1's == M3-1)
+    uint32_t a_ms;
+    bool m2_used; // strict: an M2 half is stored
+    uint8_t m2_replay[8];
+    uint32_t m2_ms;
+} PwnpalHs;
 
-// Record one handshake half and check whether it completes a 4-way with a half already stored.
-// Returns true iff a matching OPPOSITE half (same ap/client/replay, within `window` ms) exists —
-// on which it clears every stored half for that (ap, client). Otherwise the half is upserted
-// (refresh same ap/client/kind, else take a free slot, else evict the oldest). Pure + testable.
-static inline bool pwnpal_hs_insert_match(
-    PwnpalHsHalf* t, int n, uint8_t ap_idx, const uint8_t* client, const uint8_t* replay,
-    bool is_m1, uint32_t now, uint32_t window) {
-    // 1. completing opposite half already present?
-    for(int i = 0; i < n; i++) {
-        if(!t[i].used || t[i].ap_idx != ap_idx || t[i].is_m1 == is_m1) continue;
-        if(memcmp(t[i].client, client, 6) != 0 || memcmp(t[i].replay, replay, 8) != 0) continue;
-        if((uint32_t)(now - t[i].ms) > window) continue; // stale -> not a pair
-        for(int j = 0; j < n; j++) // complete: drop all halves for this (ap, client)
-            if(t[j].used && t[j].ap_idx == ap_idx && memcmp(t[j].client, client, 6) == 0)
-                t[j].used = false;
-        return true;
+typedef struct {
+    bool loose; // count / skull
+    bool strict; // crackable ✓
+} PwnpalHsVerdict;
+
+// Decrement an 8-byte big-endian EAPOL replay counter by 1 (M3's counter is M1's + 1, so this
+// normalises an M3 half onto its M1 for the strict compare). Returns false on underflow past zero
+// (M3 counters are >= 1 in practice, so this only guards the degenerate all-zero input).
+static inline bool pwnpal_rc_dec(const uint8_t* in, uint8_t* out) {
+    int borrow = 1;
+    for(int i = 7; i >= 0; i--) {
+        int v = (int)in[i] - borrow;
+        if(v < 0) { v += 256; borrow = 1; } else borrow = 0;
+        out[i] = (uint8_t)v;
     }
-    // 2. no match: refresh an existing same-kind half, else a free slot, else evict oldest.
+    return borrow == 0;
+}
+
+// Record one EAPOL message for (ap, client) and return the loose/strict verdicts as they stand
+// after this frame. msg is 1/2/3 (which 4-way message; 0/4 are ignored by the caller); pmkid marks
+// an M1 that carried an RSN PMKID; replay is the frame's EAPOL replay counter. Pure + host-tested.
+static inline PwnpalHsVerdict pwnpal_hs_note(
+    PwnpalHs* t, int n, uint8_t ap_idx, const uint8_t* client,
+    int msg, bool pmkid, const uint8_t* replay, uint32_t now, uint32_t window) {
+    PwnpalHsVerdict v = { false, false };
+    // find the (ap, client) slot, else a free one, else evict the oldest.
     int slot = -1;
     for(int i = 0; i < n; i++)
-        if(t[i].used && t[i].ap_idx == ap_idx && t[i].is_m1 == is_m1 &&
-           memcmp(t[i].client, client, 6) == 0) {
-            slot = i;
-            break;
-        }
+        if(t[i].used && t[i].ap_idx == ap_idx && memcmp(t[i].client, client, 6) == 0) { slot = i; break; }
     if(slot < 0)
         for(int i = 0; i < n; i++)
-            if(!t[i].used) {
-                slot = i;
-                break;
-            }
+            if(!t[i].used) { slot = i; break; }
     if(slot < 0) {
         slot = 0;
         for(int i = 1; i < n; i++)
             if((uint32_t)(now - t[i].ms) > (uint32_t)(now - t[slot].ms)) slot = i;
+        t[slot].used = false;
     }
-    t[slot].used = true;
-    t[slot].ap_idx = ap_idx;
-    memcpy(t[slot].client, client, 6);
-    memcpy(t[slot].replay, replay, 8);
-    t[slot].is_m1 = is_m1;
-    t[slot].ms = now;
-    return false;
+    PwnpalHs* e = &t[slot];
+    if(!e->used) {
+        e->used = true;
+        e->ap_idx = ap_idx;
+        memcpy(e->client, client, 6);
+        e->seen = 0;
+        e->a_used = false;
+        e->m2_used = false;
+    }
+    e->ms = now;
+
+    if(pmkid) { // PMKID (M1): crackable on its own, no pairing needed.
+        e->seen |= PWNPAL_PMKID;
+        v.loose = true;
+        v.strict = true;
+        return v;
+    }
+    if(msg == 1) {
+        e->seen |= PWNPAL_M1;
+        e->a_used = true;
+        memcpy(e->a_replay, replay, 8);
+        e->a_ms = now;
+    } else if(msg == 3) {
+        e->seen |= PWNPAL_M3;
+        uint8_t norm[8];
+        if(pwnpal_rc_dec(replay, norm)) {
+            e->a_used = true;
+            memcpy(e->a_replay, norm, 8);
+            e->a_ms = now;
+        }
+    } else if(msg == 2) {
+        e->seen |= PWNPAL_M2;
+        e->m2_used = true;
+        memcpy(e->m2_replay, replay, 8);
+        e->m2_ms = now;
+    }
+
+    // loose: an M2 plus any ANonce source, or a PMKID (handled above).
+    if((e->seen & PWNPAL_M2) && (e->seen & (PWNPAL_M1 | PWNPAL_M3))) v.loose = true;
+    // strict: replay-matched ANonce + M2 halves within the window.
+    if(e->a_used && e->m2_used && memcmp(e->a_replay, e->m2_replay, 8) == 0) {
+        uint32_t dt = e->a_ms > e->m2_ms ? e->a_ms - e->m2_ms : e->m2_ms - e->a_ms;
+        if(dt <= window) v.strict = true;
+    }
+    return v;
 }

@@ -24,15 +24,16 @@
 // last epoch counts as "receding". a high fraction receding across the board = we're moving.
 #define PWNPAL_RECEDE_DB 6
 
-// 4-way pairing: M1 and its M2 (same replay counter) must land within this window to count as a
-// real handshake. hcxdumptool uses 50 ms camping one channel; we hop, so allow a hop's slack.
-#define HS_PAIR_WINDOW_MS 300
-#define MAX_HS_HALFS 32 // half-handshakes tracked across all (AP, client) pairs (~24 B each)
+// crackability (✓): the strict pair — M1+M2 (same replay) or M2+M3 (replay+1) — must land within
+// this window to be a genuinely crackable capture. Generous vs a single-channel camper (we hop and
+// a deauthed client can reconnect a second later); wider risks a rare cross-association false ✓.
+#define HS_CRACK_WINDOW_MS 2000
+#define MAX_HS_HALFS 32 // (AP, client) 4-way accumulators tracked at once (~40 B each)
 
 #include <Arduino.h>
 #include <esp_wifi.h>
 #include <LinkedList.h>
-#include "pwnpal_frames.h" // pure 802.11 parsers + PwnpalHsHalf (used by the class members below)
+#include "pwnpal_frames.h" // pure 802.11 parsers + PwnpalHs (used by the class members below)
 
 // provided by Marauder (WiFiScan.h); redeclared so we compile if included first.
 extern "C" esp_err_t esp_wifi_80211_tx(wifi_interface_t ifx, const void* buffer,
@@ -95,6 +96,7 @@ class Pwnpal {
     void beginSession() {
         _n_recon = 0;
         _n_pwnd_seen = 0;
+        _n_crack_seen = 0;
         _n_sta = 0;
         for(int i = 0; i < MAX_HS_HALFS; i++) _hs[i].used = false;
         _inactive_epochs = 0;  // a fresh scan starts at full recon speed
@@ -221,7 +223,9 @@ class Pwnpal {
     int      _n_recon;
     uint8_t  _pwnd_seen[MAX_PWND][6];
     int      _n_pwnd_seen;
-    PwnpalHsHalf _hs[MAX_HS_HALFS]; // half-handshakes awaiting their pair (per AP+client+replay)
+    uint8_t  _crack_seen[MAX_PWND][6]; // APs we've already emitted a PWNPAL_CRACK for (once each)
+    int      _n_crack_seen;
+    PwnpalHs _hs[MAX_HS_HALFS]; // per (AP, client) 4-way accumulators (loose count + strict ✓)
 
     // client stations sniffed from DATA frames for unicast deauth (both directions);
     // broadcast deauth is ignored by modern clients.
@@ -256,6 +260,8 @@ class Pwnpal {
     void emitPwnd(const uint8_t* bssid, const char* ssid,
                   const char* type, int channel, int rssi,
                   bool has_fix, double lat, double lon, bool active);
+    bool markCrack(const uint8_t* bssid);          // true the first time an AP is strict-crackable
+    void emitCrack(const uint8_t* bssid, const char* method); // PWNPAL_CRACK <bssid> <pmkid|4way>
     void deauthAP(const uint8_t* bssid);
     // unicast deauth of one client, spoofed BOTH directions — the form modern clients honour.
     void deauthClient(const uint8_t* bssid, const uint8_t* client);

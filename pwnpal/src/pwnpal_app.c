@@ -125,6 +125,22 @@ typedef struct {
     float w_sum, wlat_sum, wlon_sum;
 } FriendRec;
 
+// a spotted Flock/ALPR device (session-only browse table; not persisted). same overflow rules as
+// the AP table: capped at FLOCK_MAX, recycle the least-recently-seen slot when full.
+#define FLOCK_MAX 64
+typedef struct {
+    char mac[18]; // device MAC (the key)
+    char ssid[33]; // name if it beaconed one (usually empty for probe hits)
+    char method[12]; // detection method (probe-ie, oui-tx, ssid, ...)
+    char conf[8]; // high / medium / low
+    int16_t rssi;
+    int16_t channel;
+    float lat, lon; // where seen strongest (1e9 = unknown); for the map QR
+    int8_t loc_rssi;
+    uint32_t seen_tick; // tick_secs last seen (recycle victim = oldest)
+    uint32_t first_seq; // discovery order (set once); stable newest-first sort
+} FlockRec;
+
 // capture escalation, cycled from the menu; default Deauth, gated behind consent.
 // Passive = record sniffed handshakes; Deauth = also associate + deauth (-deauth 1)
 // Auto mode: switch to wardrive once we've moved ~this far recently; fall back to siege after
@@ -175,6 +191,8 @@ typedef enum {
     ScreenFriendList,
     ScreenFriendDetail,
     ScreenFriendQr, // QR of a friend's last location
+    ScreenFlockList, // spotted Flock/ALPR devices
+    ScreenFlockDetail, // one Flock device + map QR
     ScreenStats,
     ScreenAbout,
 } Screen;
@@ -297,9 +315,15 @@ typedef struct {
     bool quiet; // suppress the LED blink + vibro on pwn / new-friend (persisted)
     bool triangulate; // on-device location estimate + sample logging (persisted)
     bool flock_detect; // passive Flock/ALPR camera spotting via WiFi signatures (persisted)
-    uint16_t flock_count; // Flock devices seen this session (distinct, from PWNPAL_FLOCK)
+    uint16_t flock_count; // distinct Flock devices seen this session (may exceed the table -> "+")
     char last_flock[18]; // MAC of the most recent Flock hit (for the persona shout)
     uint32_t flock_secs; // tick_secs of the last Flock hit (brief home-screen shout)
+    FlockRec flock[FLOCK_MAX]; // browsable spotted-device table (session-only)
+    uint16_t flock_n; // entries currently in flock[]
+    uint32_t flock_seq; // monotonic, stamped into FlockRec.first_seq
+    uint16_t flock_idx; // selected row in ScreenFlockList
+    uint16_t flock_top; // scroll window top in ScreenFlockList
+    uint16_t detail_flock; // index into flock[] shown in ScreenFlockDetail
     bool confirm_exit; // Home: first Back raises a persona prompt; second Back quits
     uint32_t confirm_secs; // tick the exit prompt went up (auto-cancels after a timeout)
     uint32_t stayed_until; // tick_secs until which the happy "stayed" reaction shows (0 = off)
@@ -1581,9 +1605,38 @@ static void pwnpal_handle_gps_line(PwnpalApp* app, const char* line) {
     storage_file_free(f);
 }
 
+// get-or-create the Flock record for mac; -1 if empty. same overflow rule as ap_get: recycle the
+// least-recently-seen slot when full (nothing to protect here). *is_new set on creation.
+static int flock_get(PwnpalModel* model, const char* mac, bool* is_new) {
+    *is_new = false;
+    if(!mac[0]) return -1;
+    for(uint16_t i = 0; i < model->flock_n; i++)
+        if(strcmp(model->flock[i].mac, mac) == 0) {
+            model->flock[i].seen_tick = model->tick_secs;
+            return (int)i;
+        }
+    int i;
+    if(model->flock_n >= FLOCK_MAX) {
+        int victim = 0;
+        for(uint16_t k = 1; k < model->flock_n; k++)
+            if(model->flock[k].seen_tick < model->flock[victim].seen_tick) victim = (int)k;
+        i = victim;
+    } else {
+        i = (int)model->flock_n++;
+    }
+    memset(&model->flock[i], 0, sizeof(FlockRec));
+    strncpy(model->flock[i].mac, mac, sizeof(model->flock[i].mac) - 1);
+    model->flock[i].first_seq = ++model->flock_seq;
+    model->flock[i].seen_tick = model->tick_secs;
+    model->flock[i].lat = 1e9f;
+    model->flock[i].lon = 1e9f;
+    *is_new = true;
+    return i;
+}
+
 // "PWNPAL_FLOCK {"mac":..,"method":..,"conf":..,"rssi":..,"channel":..,"ssid":..[,"lat":,"lon":]}"
-// passive Flock/ALPR camera hit (deduped per device by the ESP). count it, log to flock.csv with
-// GPS, and flag a blink + a brief home-screen shout.
+// passive Flock/ALPR camera hit (deduped per device by the ESP). store it, count it, log to
+// flock.csv with GPS, and flag a blink + a brief home-screen shout.
 static void pwnpal_handle_flock_line(PwnpalApp* app, const char* line) {
     char mac[18] = {0}, method[12] = {0}, conf[8] = {0}, ssid[33] = {0}, lat[16] = {0},
          lon[16] = {0};
@@ -1603,7 +1656,29 @@ static void pwnpal_handle_flock_line(PwnpalApp* app, const char* line) {
         {
             up = model->tick_secs;
             if(have_gps && gps_outlier(model, parse_deg(lat), parse_deg(lon))) have_gps = false;
-            if(model->flock_count < 0xffff) model->flock_count++;
+            bool fnew = false;
+            int fi = flock_get(model, mac, &fnew);
+            if(fi >= 0) {
+                FlockRec* fr = &model->flock[fi];
+                strncpy(fr->method, method, sizeof(fr->method) - 1);
+                strncpy(fr->conf, conf, sizeof(fr->conf) - 1);
+                if(ssid[0]) {
+                    strncpy(fr->ssid, ssid, sizeof(fr->ssid) - 1);
+                    fr->ssid[sizeof(fr->ssid) - 1] = '\0';
+                }
+                fr->rssi = (int16_t)rssi;
+                fr->channel = (int16_t)channel;
+                if(have_gps) {
+                    float la = parse_deg(lat);
+                    float lo = parse_deg(lon);
+                    if(fr->lat >= 1e8f || (rssi != 0 && (int8_t)rssi > fr->loc_rssi)) {
+                        fr->lat = la;
+                        fr->lon = lo;
+                        fr->loc_rssi = (int8_t)rssi;
+                    }
+                }
+            }
+            if(fnew && model->flock_count < 0xffff) model->flock_count++;
             strncpy(model->last_flock, mac, sizeof(model->last_flock) - 1);
             model->last_flock[sizeof(model->last_flock) - 1] = '\0';
             model->flock_secs = model->tick_secs;
@@ -2585,6 +2660,95 @@ static void pwnpal_draw_friend_qr(Canvas* canvas, const PwnpalModel* model) {
     }
 }
 
+// order flock[] newest-first (first_seq desc, stable). insertion sort, n<=64.
+static uint16_t flock_order(const PwnpalModel* m, uint16_t* out) {
+    uint16_t n = m->flock_n;
+    for(uint16_t i = 0; i < n; i++) out[i] = i;
+    for(uint16_t i = 1; i < n; i++) {
+        uint16_t v = out[i];
+        uint32_t sv = m->flock[v].first_seq;
+        int j = (int)i - 1;
+        while(j >= 0 && m->flock[out[j]].first_seq < sv) {
+            out[j + 1] = out[j];
+            j--;
+        }
+        out[j + 1] = v;
+    }
+    return n;
+}
+
+// one-letter confidence tag from the method's confidence word
+static const char* flock_conf_tag(const char* conf) {
+    return conf[0] == 'h' ? "H" : conf[0] == 'm' ? "M" : "L";
+}
+
+static void pwnpal_draw_flocklist(Canvas* canvas, const PwnpalModel* model) {
+    canvas_clear(canvas);
+    uint16_t idx[FLOCK_MAX];
+    uint16_t n = flock_order(model, idx);
+    char hint[10];
+    // count may exceed the table if devices were recycled -> "+"
+    snprintf(hint, sizeof(hint), "%u%s", model->flock_count, model->flock_count > n ? "+" : "");
+    draw_titlebar(canvas, "FLOCK", hint);
+    canvas_set_font(canvas, FontSecondary);
+    if(n == 0) {
+        canvas_draw_str(canvas, 2, 36, "no flock spotted");
+        return;
+    }
+    for(uint16_t r = 0; r < APLIST_ROWS && model->flock_top + r < n; r++) {
+        uint16_t fi = idx[model->flock_top + r];
+        const FlockRec* fr = &model->flock[fi];
+        int y = 11 + (r + 1) * 10;
+        bool sel = (model->flock_top + r == model->flock_idx);
+        if(sel) {
+            canvas_draw_box(canvas, 0, y - 9, FLIPPER_SCREEN_WIDTH, 10);
+            canvas_set_color(canvas, ColorWhite);
+        }
+        draw_skull(canvas, 1, y - 3); // surveillance marker
+        const char* name = fr->ssid[0] ? fr->ssid : fr->mac;
+        const char* cf = flock_conf_tag(fr->conf);
+        int bar_w = 26;
+        int bar_x = FLIPPER_SCREEN_WIDTH - 2 - bar_w;
+        draw_progress(canvas, bar_x, y - 7, bar_w, 7, rssi_level(fr->rssi), 50);
+        int cfw = (int)canvas_string_width(canvas, cf);
+        int cfx = bar_x - 4 - cfw;
+        canvas_draw_str(canvas, cfx, y, cf); // confidence H/M/L left of the bar
+        draw_str_trunc(canvas, 10, y, name, cfx - 10 - 3);
+        if(sel) canvas_set_color(canvas, ColorBlack);
+    }
+}
+
+static void pwnpal_draw_flockdetail(Canvas* canvas, const PwnpalModel* model) {
+    canvas_clear(canvas);
+    const FlockRec* fr = &model->flock[model->detail_flock];
+    draw_titlebar(canvas, fr->ssid[0] ? fr->ssid : "Flock device", NULL);
+    canvas_set_font(canvas, FontSecondary);
+    char l[40];
+    snprintf(l, sizeof(l), "mac %s", fr->mac);
+    canvas_draw_str(canvas, 2, 22, l);
+    snprintf(l, sizeof(l), "%s (%s)  ch%d", fr->method, fr->conf, fr->channel);
+    canvas_draw_str(canvas, 2, 33, l);
+    char age[10];
+    if(fr->seen_tick)
+        fmt_age(model->tick_secs - fr->seen_tick, age, sizeof(age));
+    else
+        snprintf(age, sizeof(age), "?");
+    if(fr->rssi)
+        draw_progress(canvas, 2, 37, 34, 8, rssi_level(fr->rssi), 50);
+    snprintf(l, sizeof(l), "%ddBm  %s", fr->rssi, age);
+    canvas_draw_str(canvas, 40, 44, l);
+    if(fr->lat < 1e8f) {
+        char cbuf[16];
+        fmt_coord(fr->lat, cbuf, sizeof(cbuf));
+        snprintf(l, sizeof(l), "@ %s", cbuf);
+        canvas_draw_str(canvas, 2, 55, l);
+        fmt_coord(fr->lon, cbuf, sizeof(cbuf));
+        canvas_draw_str(canvas, 2, 63, cbuf);
+    } else {
+        canvas_draw_str(canvas, 2, 57, "no fix (see flock.csv)");
+    }
+}
+
 static void pwnpal_draw_stats(Canvas* canvas, const PwnpalModel* model) {
     canvas_clear(canvas);
     const Persona* p = model->persona;
@@ -2811,6 +2975,8 @@ static void pwnpal_draw_callback(Canvas* canvas, void* ctx) {
     case ScreenFriendList: pwnpal_draw_friendlist(canvas, model); return;
     case ScreenFriendDetail: pwnpal_draw_frienddetail(canvas, model); return;
     case ScreenFriendQr: pwnpal_draw_friend_qr(canvas, model); return;
+    case ScreenFlockList: pwnpal_draw_flocklist(canvas, model); return;
+    case ScreenFlockDetail: pwnpal_draw_flockdetail(canvas, model); return;
     case ScreenStats: pwnpal_draw_stats(canvas, model); return;
     case ScreenAbout: pwnpal_draw_about(canvas, model); return;
     case ScreenHome:
@@ -3127,6 +3293,14 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
                         model->screen = ScreenFriendList;
                         model->fl_idx = 0;
                         model->fl_top = 0;
+                        break;
+                    case MenuFlock:
+                        // OK opens the spotted-device list, but only once something's been seen.
+                        if(model->flock_count > 0) {
+                            model->screen = ScreenFlockList;
+                            model->flock_idx = 0;
+                            model->flock_top = 0;
+                        }
                         break;
                     case MenuTarget: {
                         // clear the focus target and drop back to the auto (*) sweep
@@ -3454,6 +3628,78 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
             return true;
         }
         return true; // swallow everything else on the QR screen
+
+    case ScreenFlockList:
+        if(event->key == InputKeyBack) {
+            with_view_model(
+                app->view, PwnpalModel * model, { model->screen = ScreenMenu; }, true);
+            return true;
+        }
+        if(event->key == InputKeyUp || event->key == InputKeyDown) {
+            with_view_model(
+                app->view, PwnpalModel * model,
+                {
+                    uint16_t n = model->flock_n;
+                    if(n) {
+                        if(event->key == InputKeyDown)
+                            model->flock_idx = (uint16_t)((model->flock_idx + 1) % n);
+                        else
+                            model->flock_idx = (uint16_t)((model->flock_idx + n - 1) % n);
+                        if(model->flock_idx < model->flock_top) model->flock_top = model->flock_idx;
+                        if(model->flock_idx >= model->flock_top + APLIST_ROWS)
+                            model->flock_top = model->flock_idx - APLIST_ROWS + 1;
+                    }
+                },
+                true);
+            return true;
+        }
+        if(event->key == InputKeyOk) {
+            with_view_model(
+                app->view, PwnpalModel * model,
+                {
+                    uint16_t idx[FLOCK_MAX];
+                    uint16_t n = flock_order(model, idx);
+                    if(n && model->flock_idx < n) {
+                        model->detail_flock = idx[model->flock_idx];
+                        model->screen = ScreenFlockDetail;
+                    }
+                },
+                true);
+            return true;
+        }
+        return true;
+
+    case ScreenFlockDetail:
+        if(event->key == InputKeyBack) {
+            with_view_model(
+                app->view, PwnpalModel * model, { model->screen = ScreenFlockList; }, true);
+            return true;
+        }
+        if(event->key == InputKeyUp || event->key == InputKeyDown) {
+            with_view_model(
+                app->view, PwnpalModel * model,
+                {
+                    uint16_t idx[FLOCK_MAX];
+                    uint16_t n = flock_order(model, idx);
+                    if(n) {
+                        uint16_t pos = 0;
+                        for(uint16_t k = 0; k < n; k++)
+                            if(idx[k] == model->detail_flock) { pos = k; break; }
+                        if(event->key == InputKeyDown)
+                            pos = (uint16_t)((pos + 1) % n);
+                        else
+                            pos = (uint16_t)((pos + n - 1) % n);
+                        model->detail_flock = idx[pos];
+                        model->flock_idx = pos;
+                        if(model->flock_idx < model->flock_top) model->flock_top = model->flock_idx;
+                        if(model->flock_idx >= model->flock_top + APLIST_ROWS)
+                            model->flock_top = model->flock_idx - APLIST_ROWS + 1;
+                    }
+                },
+                true);
+            return true;
+        }
+        return true;
 
     case ScreenStats:
         if(event->key == InputKeyBack) {
@@ -3812,6 +4058,10 @@ static PwnpalApp* pwnpal_app_alloc(void) {
             model->min_rssi = -78; // matches the firmware default attack floor
             model->recon_secs = 30; // pwnagotchi recon_time
             model->flock_detect = true; // passive Flock detection on by default (home_load may override)
+            model->flock_count = 0;
+            model->flock_n = 0;
+            model->flock_seq = 0;
+            model->flock_secs = 0;
             model->screen = ScreenHome;
             model->menu_idx = 0;
             model->list_idx = 0;

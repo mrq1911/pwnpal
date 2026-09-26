@@ -285,14 +285,16 @@ void Pwnpal::endEpoch(uint32_t now) {
         "PWNPAL_EPOCH {\"n\":%lu,\"recon\":%d,\"attackable\":%d,\"chans\":%d,\"assoc\":%u,"
         "\"deauth\":%u,\"unicast\":%u,\"sta\":%d,\"hs\":%u,\"pmkid\":%u,\"miss\":%u,"
         "\"dpmf\":%u,\"dnocli\":%u,\"dcloak\":%u,\"adds\":%u,\"recede\":%d,\"recede_avg\":%d,"
-        "\"cohort\":%d}\n",
+        "\"cohort\":%d,\"flock\":%u}\n",
         (unsigned long)_epoch_seq, _n_recon, attackable_n, _n_attack, (unsigned)_ep_assoc,
         (unsigned)_ep_deauth, (unsigned)_ep_unicast, _n_sta, (unsigned)_ep_hs,
         (unsigned)_ep_pmkid, (unsigned)_ep_miss, (unsigned)_ep_dpmf, (unsigned)_ep_dnocli,
-        (unsigned)_ep_dcloak, (unsigned)_ep_adds, recede_pct, recede_avg, cohort);
+        (unsigned)_ep_dcloak, (unsigned)_ep_adds, recede_pct, recede_avg, cohort,
+        (unsigned)_ep_flock);
     if (n > 0) Serial.write((const uint8_t*)line, (size_t)(n >= (int)sizeof(line) ? sizeof(line) - 1 : n));
     _epoch_seq++;
-    _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = _ep_dcloak = _ep_adds = 0;
+    _ep_assoc = _ep_deauth = _ep_unicast = _ep_hs = _ep_pmkid = _ep_miss = _ep_dcloak = _ep_adds =
+        _ep_flock = 0;
 
     if (_epoch_pwnd) _inactive_epochs = 0;
     else if (_inactive_epochs < 255) _inactive_epochs++;
@@ -519,6 +521,8 @@ bool Pwnpal::configureFromArgs(LinkedList<String>* args) {
             _assoc_policy = (val == "1" || val == "true");
         } else if (flag == "-wardrive") {
             _wardrive = (val == "1" || val == "true");
+        } else if (flag == "-flock") {
+            _flock_detect = (val == "1" || val == "true"); // passive Flock/ALPR camera spotting
         } else if (flag == "-minrssi") {
             // Attack-targeting floor in dBm (e.g. -78). -128 disables the gate.
             int r = val.toInt();
@@ -1170,6 +1174,46 @@ void Pwnpal::reportDecloak(const uint8_t* payload, int length, int rssi, int cha
     if (n > 0)
         Serial.write((const uint8_t*)line,
                      (size_t)(n >= (int)sizeof(line) ? sizeof(line) - 1 : n));
+}
+
+// passive Flock/ALPR spotting: match a mgmt frame against the signatures in pwnpal_frames.h and
+// emit PWNPAL_FLOCK once per device this session. no transmission, ever.
+void Pwnpal::reportFlock(const uint8_t* payload, int length, int rssi, int channel,
+                         bool has_fix, double lat, double lon) {
+    if (!_flock_detect) return;
+    const uint8_t* dev = nullptr;
+    FlockMethod m = pwnpal_flock_match(payload, length, &dev);
+    if (m == FLOCK_NONE || dev == nullptr) return;
+    for (int i = 0; i < _n_flock_seen; i++)             // one report per device per session
+        if (memcmp(_flock_seen[i], dev, 6) == 0) return;
+    if (_n_flock_seen < MAX_FLOCK_SEEN) memcpy(_flock_seen[_n_flock_seen++], dev, 6);
+    _ep_flock++;
+
+    has_fix = geoResolve(has_fix, &lat, &lon);
+    char ssid[33] = {0};                                // best-effort name (beacon/probe-resp)
+    uint8_t subtype = (payload[0] >> 4) & 0xf;
+    int slen = -1;
+    const uint8_t* s = (subtype == 4) ? pwnpal_ie(payload, length, 24, 0, &slen) :
+                                        pwnpal_ie(payload, length, 36, 0, &slen);
+    if (s && slen > 0) {
+        char raw[33];
+        int nn = slen > 32 ? 32 : slen;
+        for (int i = 0; i < nn; i++) raw[i] = (char)s[i];
+        raw[nn] = '\0';
+        sanitize(raw, ssid, sizeof(ssid));
+    }
+    char mac[18];
+    fmt_mac(mac, dev);
+    char geo[48];
+    fmt_geo(geo, sizeof(geo), has_fix, lat, lon);
+    char line[224];
+    int n = snprintf(line, sizeof(line),
+        "PWNPAL_FLOCK {\"mac\":\"%s\",\"method\":\"%s\",\"conf\":\"%s\",\"rssi\":%d,\"channel\":%d,"
+        "\"ssid\":\"%s\"%s}\n",
+        mac, pwnpal_flock_method_name(m), pwnpal_flock_confidence(m), rssi, channel, ssid, geo);
+    if (n < 0) return;
+    if (n >= (int)sizeof(line)) n = sizeof(line) - 1;
+    Serial.write((const uint8_t*)line, n);
 }
 
 bool Pwnpal::reportHandshake(const uint8_t* payload, int length, int rssi, int channel,

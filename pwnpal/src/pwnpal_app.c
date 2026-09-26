@@ -70,6 +70,8 @@ typedef enum {
 #define GPS_PATH "/ext/apps_data/pwnpal/gps.csv"
 // link-watchdog transitions, to debug spurious "no ESP32" flashes
 #define LINKDBG_PATH "/ext/apps_data/pwnpal/linkdbg.csv"
+// passive Flock/ALPR camera detections (DeFlock/WiGLE-friendly), one row per device
+#define FLOCK_PATH "/ext/apps_data/pwnpal/flock.csv"
 // per-AP pcap bookkeeping: EAPOL filed? ESSID beacon spliced?
 #define APF_HS_SEEN 0x01
 #define APF_BEACON_DONE 0x02
@@ -194,6 +196,7 @@ typedef enum {
     MenuSetHome, // OK: capture GPS home
     MenuQuiet, // toggle
     MenuTriangulate, // toggle: on-device location estimate + sample logging
+    MenuFlock, // toggle: passive Flock/ALPR camera detection
     MenuBattery, // cycle: off / light / deep battery saver
     MenuReset, // OK: reset settings to defaults (with confirmation)
     MenuAbout, // OK: about (pinned last)
@@ -293,6 +296,10 @@ typedef struct {
     bool home_set; // user set a home (else default Prague "Mother")
     bool quiet; // suppress the LED blink + vibro on pwn / new-friend (persisted)
     bool triangulate; // on-device location estimate + sample logging (persisted)
+    bool flock_detect; // passive Flock/ALPR camera spotting via WiFi signatures (persisted)
+    uint16_t flock_count; // Flock devices seen this session (distinct, from PWNPAL_FLOCK)
+    char last_flock[18]; // MAC of the most recent Flock hit (for the persona shout)
+    uint32_t flock_secs; // tick_secs of the last Flock hit (brief home-screen shout)
     bool confirm_exit; // Home: first Back raises a persona prompt; second Back quits
     uint32_t confirm_secs; // tick the exit prompt went up (auto-cancels after a timeout)
     uint32_t stayed_until; // tick_secs until which the happy "stayed" reaction shows (0 = off)
@@ -345,6 +352,7 @@ typedef struct {
     size_t line_len;
     bool got_new_friend; // set by worker, consumed for a notification blink
     bool got_pwnd; // set by worker, consumed for the capture blink
+    bool got_flock; // set by worker on a Flock/ALPR hit, consumed for an alert blink
 } PwnpalApp;
 
 // rising two-note chirp for a spotted friend
@@ -431,6 +439,7 @@ static void pwnpal_send_advertise(PwnpalApp* app) {
             int assoc = tx ? 1 : 0; // every active mode solicits PMKID
             int deauth = (tx && (em == CaptureRoam || em == CaptureSiege)) ? 1 : 0;
             int wardrive = (em == CaptureWardrive || em == CaptureRoam) ? 1 : 0;
+            int flock = model->flock_detect ? 1 : 0; // passive Flock/ALPR spotting (no TX, no consent)
             // -ch: 0 = auto-hop ('*' sweep); 1..14 pins the tuned channel
             int ch = (model->tuned_channel >= 1 && model->tuned_channel <= 14) ?
                          model->tuned_channel : 0;
@@ -457,7 +466,7 @@ static void pwnpal_send_advertise(PwnpalApp* app) {
                 cmd,
                 sizeof(cmd),
                 "pwnpal -n %s -id %s -f %d -pr %lu -pt %lu -u %lu -e %lu -cap %d "
-                "-deauth %d -assoc %d -wardrive %d -ch %d -minrssi %d -recon %u -saver %d "
+                "-deauth %d -assoc %d -wardrive %d -flock %d -ch %d -minrssi %d -recon %u -saver %d "
                 "-target %s -wl %s\n",
                 safe_name,
                 p->s.identity,
@@ -470,6 +479,7 @@ static void pwnpal_send_advertise(PwnpalApp* app) {
                 deauth,
                 assoc,
                 wardrive,
+                flock,
                 ch,
                 (int)model->min_rssi,
                 (unsigned)model->recon_secs,
@@ -885,6 +895,7 @@ typedef struct {
     uint16_t recon_secs; // v6: recon_time (u16 first so it stays 2-byte aligned)
     uint8_t capture_mode; // v6: Mode selector
     int8_t min_rssi; // v6: attack RSSI floor
+    uint8_t flock_detect; // v7: passive Flock/ALPR detection
     // (tuned_channel is target-driven/transient, deliberately not persisted)
 } HomeDb;
 
@@ -907,6 +918,7 @@ static void home_load(Storage* storage, PwnpalModel* model) {
                 model->min_rssi = h.min_rssi;
                 model->recon_secs = h.recon_secs;
             }
+            if(h.version >= 7) model->flock_detect = h.flock_detect != 0;
         }
     }
     storage_file_close(f);
@@ -919,7 +931,7 @@ static void home_save(Storage* storage, PwnpalModel* model) {
     if(storage_file_open(f, HOME_DB_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         HomeDb h = {0};
         h.magic = HOME_DB_MAGIC;
-        h.version = 6;
+        h.version = 7;
         h.lat = model->home_lat;
         h.lon = model->home_lon;
         h.quiet = model->quiet ? 1 : 0;
@@ -929,6 +941,7 @@ static void home_save(Storage* storage, PwnpalModel* model) {
         h.recon_secs = model->recon_secs;
         h.capture_mode = model->capture_mode;
         h.min_rssi = model->min_rssi;
+        h.flock_detect = model->flock_detect ? 1 : 0;
         storage_file_write(f, &h, sizeof(h));
     }
     storage_file_close(f);
@@ -1568,6 +1581,53 @@ static void pwnpal_handle_gps_line(PwnpalApp* app, const char* line) {
     storage_file_free(f);
 }
 
+// "PWNPAL_FLOCK {"mac":..,"method":..,"conf":..,"rssi":..,"channel":..,"ssid":..[,"lat":,"lon":]}"
+// passive Flock/ALPR camera hit (deduped per device by the ESP). count it, log to flock.csv with
+// GPS, and flag a blink + a brief home-screen shout.
+static void pwnpal_handle_flock_line(PwnpalApp* app, const char* line) {
+    char mac[18] = {0}, method[12] = {0}, conf[8] = {0}, ssid[33] = {0}, lat[16] = {0},
+         lon[16] = {0};
+    int rssi = 0, channel = 0;
+    line_extract_str(line, "\"mac\":\"", mac, sizeof(mac));
+    line_extract_str(line, "\"method\":\"", method, sizeof(method));
+    line_extract_str(line, "\"conf\":\"", conf, sizeof(conf));
+    line_extract_str(line, "\"ssid\":\"", ssid, sizeof(ssid));
+    line_extract_int(line, "\"rssi\":", &rssi);
+    line_extract_int(line, "\"channel\":", &channel);
+    bool have_gps = line_extract_number(line, "\"lat\":", lat, sizeof(lat)) &&
+                    line_extract_number(line, "\"lon\":", lon, sizeof(lon)) && coord_ok(lat, lon);
+
+    uint32_t up = 0;
+    with_view_model(
+        app->view, PwnpalModel * model,
+        {
+            up = model->tick_secs;
+            if(have_gps && gps_outlier(model, parse_deg(lat), parse_deg(lon))) have_gps = false;
+            if(model->flock_count < 0xffff) model->flock_count++;
+            strncpy(model->last_flock, mac, sizeof(model->last_flock) - 1);
+            model->last_flock[sizeof(model->last_flock) - 1] = '\0';
+            model->flock_secs = model->tick_secs;
+        },
+        true);
+    app->got_flock = true;
+
+    storage_common_mkdir(app->storage, "/ext/apps_data/pwnpal");
+    File* f = storage_file_alloc(app->storage);
+    if(storage_file_open(f, FLOCK_PATH, FSAM_WRITE, FSOM_OPEN_APPEND)) {
+        if(storage_file_size(f) == 0) {
+            const char* h = "uptime_s,mac,method,conf,rssi,channel,lat,lon,ssid\n";
+            storage_file_write(f, h, strlen(h));
+        }
+        char row[176];
+        snprintf(
+            row, sizeof(row), "%lu,%s,%s,%s,%d,%d,%s,%s,%s\n", (unsigned long)up, mac, method, conf,
+            rssi, channel, have_gps ? lat : "", have_gps ? lon : "", ssid);
+        storage_file_write(f, row, strlen(row));
+    }
+    storage_file_close(f);
+    storage_file_free(f);
+}
+
 static void pwnpal_process_line(PwnpalApp* app, const char* line) {
     // PWND and PEER share the PWNPAL_P prefix, so compare both fully
     if(strncmp(line, "PWNPAL_PEER ", 12) == 0) {
@@ -1588,6 +1648,8 @@ static void pwnpal_process_line(PwnpalApp* app, const char* line) {
         pwnpal_handle_adv_line(app, line);
     } else if(strncmp(line, "PWNPAL_MISS ", 12) == 0) {
         pwnpal_handle_miss_line(app, line);
+    } else if(strncmp(line, "PWNPAL_FLOCK ", 13) == 0) {
+        pwnpal_handle_flock_line(app, line);
     }
     // any PWNPAL_* line proves the board is alive; stamp the link watchdog here
     if(strncmp(line, "PWNPAL_", 7) == 0) {
@@ -1666,6 +1728,8 @@ static void pwnpal_populate(PwnpalModel* model) {
         furi_string_set(pwn->message, "Exit pwnpal?");
     } else if(model->tick_secs < model->stayed_until) {
         furi_string_set(pwn->message, "staying!");
+    } else if(model->flock_secs && model->tick_secs - model->flock_secs < 8) {
+        furi_string_set(pwn->message, "flock spotted!"); // passive Flock/ALPR hit
     } else if(!model->advertising) {
         furi_string_set(pwn->message, "paused - OK for menu");
     } else if(strcmp(model->gps_place, "Look up!") == 0) {
@@ -1735,6 +1799,7 @@ static void pwnpal_reset_settings(PwnpalModel* model) {
     model->recon_secs = 30;
     model->quiet = false;
     model->triangulate = true;
+    model->flock_detect = true; // passive + a headline feature -> on by default
     model->saver = 0;
 }
 
@@ -2168,6 +2233,14 @@ static void pwnpal_draw_menu(Canvas* canvas, const PwnpalModel* model) {
             label = "Triangulate";
             adjustable = true;
             snprintf(value, sizeof(value), "%s", model->triangulate ? "on" : "off");
+            break;
+        case MenuFlock:
+            label = "Flock detect";
+            adjustable = true;
+            if(model->flock_detect && model->flock_count)
+                snprintf(value, sizeof(value), "on %u", model->flock_count); // live hit count
+            else
+                snprintf(value, sizeof(value), "%s", model->flock_detect ? "on" : "off");
             break;
         case MenuBattery:
             label = "Battery saver";
@@ -2700,7 +2773,8 @@ static void pwnpal_draw_home(Canvas* canvas, PwnpalModel* model) {
     int mw = (int)canvas_string_width(canvas, ms);
     canvas_draw_str(canvas, FLIPPER_SCREEN_WIDTH - mw, 52, ms);
     // Mood page (or paused) speaks; other pages show the stat panel; exit/staying always speaks
-    bool reacting = model->confirm_exit || model->tick_secs < model->stayed_until;
+    bool reacting = model->confirm_exit || model->tick_secs < model->stayed_until ||
+                    (model->flock_secs && model->tick_secs - model->flock_secs < 8);
     if(!reacting && model->advertising && model->stat_page != StatPageMood)
         pwnpal_draw_home_stats(canvas, model);
     else
@@ -2986,6 +3060,11 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
                         break;
                     case MenuTriangulate:
                         model->triangulate = !model->triangulate;
+                        home_save(app->storage, model);
+                        break;
+                    case MenuFlock:
+                        model->flock_detect = !model->flock_detect;
+                        need_advertise = model->advertising; // push -flock to the ESP
                         home_save(app->storage, model);
                         break;
                     case MenuBattery:
@@ -3644,7 +3723,7 @@ static int32_t pwnpal_worker(void* context) {
                 }
             }
 
-            if(app->got_new_friend || app->got_pwnd) {
+            if(app->got_new_friend || app->got_pwnd || app->got_flock) {
                 bool quiet = false;
                 with_view_model(
                     app->view, PwnpalModel * model, { quiet = model->quiet; }, false);
@@ -3655,6 +3734,10 @@ static int32_t pwnpal_worker(void* context) {
                 if(app->got_pwnd) {
                     app->got_pwnd = false;
                     if(!quiet) notification_message(app->notification, &sequence_pwnd);
+                }
+                if(app->got_flock) {
+                    app->got_flock = false;
+                    if(!quiet) notification_message(app->notification, &sequence_double_vibro);
                 }
             }
         }
@@ -3728,6 +3811,7 @@ static PwnpalApp* pwnpal_app_alloc(void) {
             model->stat_page = StatPageMood;
             model->min_rssi = -78; // matches the firmware default attack floor
             model->recon_secs = 30; // pwnagotchi recon_time
+            model->flock_detect = true; // passive Flock detection on by default (home_load may override)
             model->screen = ScreenHome;
             model->menu_idx = 0;
             model->list_idx = 0;

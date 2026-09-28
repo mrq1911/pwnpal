@@ -20,6 +20,9 @@
 #include "../include/consent.h"
 #include "../include/pcap.h"
 #include "../include/wardrive.h"
+// pure 802.11 parsers shared with the firmware; here they run over the frames we actually save to
+// the pcap, so "crackable" means the saved file will crack (see pwnpal_note_crackable).
+#include "../../pwnpal-marauder/pwnpal_frames.h"
 #include "pwnpal_geo.h" // pure geo/identity helpers
 #include "qrcodegen.h"
 #include <storage/storage.h>
@@ -1351,6 +1354,40 @@ static void pwnpal_handle_ap_line(PwnpalApp* app, const char* line) {
     }
 }
 
+// Strict crackability, judged Flipper-side over the exact bytes we just saved to the pcap: a
+// replay-matched M1+M2 or M2+M3 within a short window, or a PMKID — all excluding WPA3-SAE (kdv 0),
+// which hashcat can't crack. Sets the AP's crackable flag (persists with the record and can flip
+// true later as more frames land). One scratch table; only the serial-worker thread calls this.
+#define FLIPPER_HS_SLOTS 64
+#define HS_CRACK_WIN_MS 2000
+static void pwnpal_note_crackable(PwnpalApp* app, const char* key, const uint8_t* frame, size_t flen) {
+    int eo = pwnpal_eapol_locate(frame, (int)flen);
+    if(eo < 0) return; // not EAPOL
+    PwnpalEapolKey k;
+    if(!pwnpal_eapol_key(frame, (int)flen, eo, &k)) return;
+    int msg = pwnpal_eapol_msg(&k);
+    if(msg == 0) return; // M4 / not a handshake message
+    bool pmkid = (msg == 1) && k.pmkid_nz;
+    if(!pmkid && !k.nonce_nz) return; // a pairing half needs a real nonce
+    const uint8_t* client = NULL;
+    pwnpal_ds_bssid(frame, (int)flen, &client);
+    static PwnpalHs hs_tab[FLIPPER_HS_SLOTS];
+    uint32_t now = furi_get_tick();
+    with_view_model(
+        app->view,
+        PwnpalModel * model,
+        {
+            int ai = ap_find(model, key);
+            if(ai >= 0) {
+                PwnpalHsVerdict v = pwnpal_hs_note(
+                    hs_tab, FLIPPER_HS_SLOTS, (uint8_t)ai, client, msg, pmkid, k.kdv, k.replay, now,
+                    HS_CRACK_WIN_MS);
+                if(v.strict) model->aps[ai].crackable = true;
+            }
+        },
+        false); // no forced redraw; the browser refreshes on its own and crackable rarely flips
+}
+
 static void pwnpal_handle_hs_line(PwnpalApp* app, const char* line) {
     // "PWNPAL_HS <bssid12hex> <hex-of-full-802.11-frame>"; the bssid names the per-target
     // pcap so beacon + EAPOL share one crackable <bssid>.pcap without needing a preceding PWND.
@@ -1410,6 +1447,8 @@ static void pwnpal_handle_hs_line(PwnpalApp* app, const char* line) {
         if(bl > 0) pcap_append_frame(app->storage, bssid, beac, (uint16_t)bl);
     }
     pcap_append_frame(app->storage, bssid, frame, (uint16_t)flen);
+    // strict crackable verdict over exactly what we saved (see pwnpal_note_crackable)
+    pwnpal_note_crackable(app, bssid, frame, flen);
 }
 
 static void pwnpal_handle_miss_line(PwnpalApp* app, const char* line) {
@@ -1569,39 +1608,12 @@ static void pwnpal_handle_gps_line(PwnpalApp* app, const char* line) {
     storage_file_free(f);
 }
 
-// "PWNPAL_CRACK <bssid> <pmkid|4way>" — the firmware verified a genuinely crackable capture for
-// this AP (strict, hcx-equivalent). Sets the AP's crackable flag so the browser shows the ✓/CRACK.
-// The AP already exists: strict implies loose, and the loose PWNPAL_PWND that created it precedes
-// (or accompanies) this line.
-static void pwnpal_handle_crack_line(PwnpalApp* app, const char* line) {
-    const char* p = line + 13; // past "PWNPAL_CRACK "
-    char bssid[18] = {0};
-    size_t i = 0;
-    while(p[i] && p[i] != ' ' && i < sizeof(bssid) - 1) {
-        bssid[i] = p[i];
-        i++;
-    }
-    if(i == 0) return;
-    char key[13];
-    bssid_key(key, bssid);
-    with_view_model(
-        app->view,
-        PwnpalModel * model,
-        {
-            int ai = ap_find(model, key);
-            if(ai >= 0) model->aps[ai].crackable = true;
-        },
-        true); // redraw: the ✓/CRACK label may flip
-}
-
 static void pwnpal_process_line(PwnpalApp* app, const char* line) {
     // PWND and PEER share the PWNPAL_P prefix, so compare both fully
     if(strncmp(line, "PWNPAL_PEER ", 12) == 0) {
         pwnpal_handle_peer_line(app, line);
     } else if(strncmp(line, "PWNPAL_PWND ", 12) == 0) {
         pwnpal_handle_pwnd_line(app, line);
-    } else if(strncmp(line, "PWNPAL_CRACK ", 13) == 0) {
-        pwnpal_handle_crack_line(app, line);
     } else if(strncmp(line, "PWNPAL_HS ", 10) == 0) {
         pwnpal_handle_hs_line(app, line);
     } else if(strncmp(line, "PWNPAL_AP ", 10) == 0) {

@@ -32,18 +32,19 @@ static void rep(uint8_t* r, uint8_t tag) { // 8-byte big-endian replay counter =
     r[7] = tag;
 }
 
-// convenience wrappers naming the 4-way message
+// convenience wrappers naming the 4-way message (kdv 2 = WPA2, the PSK-crackable case)
+#define KDV2 2
 static PwnpalHsVerdict m1(PwnpalHs* t, uint8_t ap, const uint8_t* c, const uint8_t* r, uint32_t ms) {
-    return pwnpal_hs_note(t, N, ap, c, 1, false, r, ms, WIN);
+    return pwnpal_hs_note(t, N, ap, c, 1, false, KDV2, r, ms, WIN);
 }
 static PwnpalHsVerdict m2(PwnpalHs* t, uint8_t ap, const uint8_t* c, const uint8_t* r, uint32_t ms) {
-    return pwnpal_hs_note(t, N, ap, c, 2, false, r, ms, WIN);
+    return pwnpal_hs_note(t, N, ap, c, 2, false, KDV2, r, ms, WIN);
 }
 static PwnpalHsVerdict m3(PwnpalHs* t, uint8_t ap, const uint8_t* c, const uint8_t* r, uint32_t ms) {
-    return pwnpal_hs_note(t, N, ap, c, 3, false, r, ms, WIN);
+    return pwnpal_hs_note(t, N, ap, c, 3, false, KDV2, r, ms, WIN);
 }
 static PwnpalHsVerdict pmkid(PwnpalHs* t, uint8_t ap, const uint8_t* c, const uint8_t* r, uint32_t ms) {
-    return pwnpal_hs_note(t, N, ap, c, 1, true, r, ms, WIN);
+    return pwnpal_hs_note(t, N, ap, c, 1, true, KDV2, r, ms, WIN);
 }
 
 int main(void) {
@@ -143,6 +144,27 @@ int main(void) {
     uint8_t cOldest[6]; cli(cOldest, 1);
     CHECK(!m2(t, 5, cOldest, r1, 5050).strict, "evicted client -> M2 finds no M1");
     CHECK(m2(t, 5, cNew, r1, 5050).strict, "newest client still pairs");
+
+    // WPA3-SAE etc (kdv 0): counted loose, but never strict-crackable (hashcat can't take it).
+    printf("kdv 0 (WPA3-SAE) exclusion from strict:\n");
+    reset(t);
+    { PwnpalHsVerdict v = pwnpal_hs_note(t, N, 5, cA, 1, true, 0, r1, 1000, WIN);
+      CHECK(v.loose && !v.strict, "PMKID kdv0 -> loose, not strict"); }
+    reset(t);
+    pwnpal_hs_note(t, N, 5, cA, 1, false, 0, r1, 1000, WIN); // M1 kdv0
+    { PwnpalHsVerdict v = pwnpal_hs_note(t, N, 5, cA, 2, false, 0, r1, 1100, WIN); // M2 kdv0
+      CHECK(v.loose && !v.strict, "M1+M2 both kdv0 -> loose, not strict"); }
+    reset(t);
+    pwnpal_hs_note(t, N, 5, cA, 1, false, 0, r1, 1000, WIN); // M1 kdv0
+    { PwnpalHsVerdict v = pwnpal_hs_note(t, N, 5, cA, 2, false, KDV2, r1, 1100, WIN); // M2 kdv2
+      CHECK(!v.strict, "pair with one kdv0 half -> not strict"); }
+    reset(t);
+    pwnpal_hs_note(t, N, 5, cA, 2, false, KDV2, r1, 1000, WIN); // M2 kdv2
+    { PwnpalHsVerdict v = pwnpal_hs_note(t, N, 5, cA, 3, false, 0, r2, 1100, WIN); // M3 kdv0
+      CHECK(!v.strict, "M2+M3 with kdv0 M3 -> not strict"); }
+    reset(t);
+    { PwnpalHsVerdict v = pwnpal_hs_note(t, N, 5, cA, 1, true, KDV2, r1, 1000, WIN);
+      CHECK(v.strict, "PMKID kdv2 -> strict (sanity)"); }
 
     printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
     return failures ? 1 : 0;

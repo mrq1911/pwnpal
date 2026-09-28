@@ -96,7 +96,6 @@ class Pwnpal {
     void beginSession() {
         _n_recon = 0;
         _n_pwnd_seen = 0;
-        _n_crack_seen = 0;
         _n_sta = 0;
         for(int i = 0; i < MAX_HS_HALFS; i++) _hs[i].used = false;
         _inactive_epochs = 0;  // a fresh scan starts at full recon speed
@@ -223,9 +222,7 @@ class Pwnpal {
     int      _n_recon;
     uint8_t  _pwnd_seen[MAX_PWND][6];
     int      _n_pwnd_seen;
-    uint8_t  _crack_seen[MAX_PWND][6]; // APs we've already emitted a PWNPAL_CRACK for (once each)
-    int      _n_crack_seen;
-    PwnpalHs _hs[MAX_HS_HALFS]; // per (AP, client) 4-way accumulators (loose count + strict ✓)
+    PwnpalHs _hs[MAX_HS_HALFS]; // per (AP, client) 4-way accumulators (loose count; strict is Flipper-side)
 
     // client stations sniffed from DATA frames for unicast deauth (both directions);
     // broadcast deauth is ignored by modern clients.
@@ -260,8 +257,6 @@ class Pwnpal {
     void emitPwnd(const uint8_t* bssid, const char* ssid,
                   const char* type, int channel, int rssi,
                   bool has_fix, double lat, double lon, bool active);
-    bool markCrack(const uint8_t* bssid);          // true the first time an AP is strict-crackable
-    void emitCrack(const uint8_t* bssid, const char* method); // PWNPAL_CRACK <bssid> <pmkid|4way>
     void deauthAP(const uint8_t* bssid);
     // unicast deauth of one client, spoofed BOTH directions — the form modern clients honour.
     void deauthClient(const uint8_t* bssid, const uint8_t* client);

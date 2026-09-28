@@ -13,9 +13,10 @@ full, self-contained pwnagotchi.
   other units, and grows a persona that levels up with encounters.
 - **Real capture** — WPA/WPA2 4-way handshakes and PMKID, saved as per-BSSID `.pcap` for
   hashcat `-m 22000`. Pwns are counted pwnagotchi-style (a PMKID, or an M1+M2 / M2+M3 for one
-  client), and a separate on-device check flags which captures are *genuinely crackable* — a
-  replay-matched pair or a PMKID, the same rule hcxpcapngtool applies — shown as **✓/CRACK** in
-  the browser and a `crack` tally in Stats.
+  client). Separately, the Flipper re-checks each frame it writes and flags an AP **✓/CRACK**
+  only when the saved pcap is *genuinely crackable* — a replay-matched pair or a PMKID, WPA2-PSK
+  only (WPA3-SAE excluded) — the same rule hcxpcapngtool applies. Shown in the browser and as a
+  `crack` tally in Stats.
 - **De-cloak** — recovers hidden ESSIDs from clients' (re)association requests and splices
   them into the capture, turning otherwise-uncrackable loot crackable. De-cloaked APs are
   marked in the list and logged to `decloak.csv`.

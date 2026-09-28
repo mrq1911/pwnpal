@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdbool.h> // so this compiles into the C fap too, not just the C++ firmware
 
 // does this beacon/probe-response require 802.11w PMF (RSN MFPR bit)? if so deauth is
 // futile, PMKID only. walks tagged params to the RSN IE (id 48) caps. bounds-checked,
@@ -48,6 +49,7 @@ static inline int pwnpal_eapol_locate(const uint8_t* f, int len) {
 
 typedef struct {
     bool key_ack, key_mic, secure, install; // key_info bits 7, 8, 9, 6
+    uint8_t kdv; // key descriptor version (key_info bits 0-2). 0 = WPA3-SAE etc: not PSK-crackable
     uint8_t nonce[32];
     bool nonce_nz; // Key Nonce: ANonce on M1/M3, SNonce on M2, ~zero on M4
     uint8_t replay[8]; // EAPOL-Key replay counter (pairs M1<->M2)
@@ -66,6 +68,7 @@ static inline bool pwnpal_eapol_key(const uint8_t* f, int len, int eo, PwnpalEap
     for(int i = 0; i < 8; i++) out->replay[i] = 0;
     for(int i = 0; i < 16; i++) out->pmkid[i] = 0;
     uint16_t ki = (uint16_t)((f[eo + 5] << 8) | f[eo + 6]);
+    out->kdv = (uint8_t)(ki & 0x07); // 1=WPA/RC4 2=WPA2/AES 3=CMAC; 0=SAE etc (not PSK-crackable)
     out->key_ack = (ki & (1 << 7)) != 0;
     out->key_mic = (ki & (1 << 8)) != 0;
     out->secure = (ki & (1 << 9)) != 0;
@@ -121,6 +124,15 @@ static inline const uint8_t* pwnpal_ds_bssid(const uint8_t* f, int len, const ui
     return bssid;
 }
 
+// Classify a parsed EAPOL-Key as which 4-way message it is: 1/2/3, or 0 for M4 / not a handshake
+// message. Shared so the firmware (loose count) and the app (strict crackable) agree byte-for-byte.
+static inline int pwnpal_eapol_msg(const PwnpalEapolKey* k) {
+    if(k->key_ack && !k->key_mic) return 1;               // M1 (ANonce; may carry a PMKID)
+    if(!k->key_ack && k->key_mic && !k->secure) return 2; // M2 (SNonce + MIC)
+    if(k->key_ack && k->key_mic && k->secure) return 3;   // M3 (ANonce again, replay = M1 + 1)
+    return 0;                                             // M4 (nonce ~zero) or not a 4-way message
+}
+
 // --- per-client 4-way tracking (Phase B, two verdicts) --------------------------------------
 // One table answers both questions the app asks about an (AP, client):
 //   loose  — pwnagotchi/bettercap Handshake.Complete(): a PMKID, or an M2 (SNonce+MIC) seen
@@ -143,9 +155,11 @@ typedef struct {
     uint8_t seen; // loose: OR of PWNPAL_M1/M2/M3/PMKID ever seen for this (AP, client)
     bool a_used; // strict: an ANonce half is stored (M1, or M3 normalised)
     uint8_t a_replay[8]; // its replay counter (M3 stored as M1's == M3-1)
+    uint8_t a_kdv; // its key descriptor version (0 = not PSK-crackable)
     uint32_t a_ms;
     bool m2_used; // strict: an M2 half is stored
     uint8_t m2_replay[8];
+    uint8_t m2_kdv;
     uint32_t m2_ms;
 } PwnpalHs;
 
@@ -169,10 +183,12 @@ static inline bool pwnpal_rc_dec(const uint8_t* in, uint8_t* out) {
 
 // Record one EAPOL message for (ap, client) and return the loose/strict verdicts as they stand
 // after this frame. msg is 1/2/3 (which 4-way message; 0/4 are ignored by the caller); pmkid marks
-// an M1 that carried an RSN PMKID; replay is the frame's EAPOL replay counter. Pure + host-tested.
+// an M1 that carried an RSN PMKID; kdv is the frame's key descriptor version (0 = WPA3-SAE etc,
+// which hashcat can't crack -> excluded from strict, but still counted loose); replay is the
+// frame's EAPOL replay counter. Pure + host-tested.
 static inline PwnpalHsVerdict pwnpal_hs_note(
     PwnpalHs* t, int n, uint8_t ap_idx, const uint8_t* client,
-    int msg, bool pmkid, const uint8_t* replay, uint32_t now, uint32_t window) {
+    int msg, bool pmkid, uint8_t kdv, const uint8_t* replay, uint32_t now, uint32_t window) {
     PwnpalHsVerdict v = { false, false };
     // find the (ap, client) slot, else a free one, else evict the oldest.
     int slot = -1;
@@ -201,13 +217,14 @@ static inline PwnpalHsVerdict pwnpal_hs_note(
     if(pmkid) { // PMKID (M1): crackable on its own, no pairing needed.
         e->seen |= PWNPAL_PMKID;
         v.loose = true;
-        v.strict = true;
+        v.strict = (kdv != 0); // WPA3-SAE PMKID (kdv 0) is not PSK-crackable
         return v;
     }
     if(msg == 1) {
         e->seen |= PWNPAL_M1;
         e->a_used = true;
         memcpy(e->a_replay, replay, 8);
+        e->a_kdv = kdv;
         e->a_ms = now;
     } else if(msg == 3) {
         e->seen |= PWNPAL_M3;
@@ -215,19 +232,22 @@ static inline PwnpalHsVerdict pwnpal_hs_note(
         if(pwnpal_rc_dec(replay, norm)) {
             e->a_used = true;
             memcpy(e->a_replay, norm, 8);
+            e->a_kdv = kdv;
             e->a_ms = now;
         }
     } else if(msg == 2) {
         e->seen |= PWNPAL_M2;
         e->m2_used = true;
         memcpy(e->m2_replay, replay, 8);
+        e->m2_kdv = kdv;
         e->m2_ms = now;
     }
 
-    // loose: an M2 plus any ANonce source, or a PMKID (handled above).
+    // loose: an M2 plus any ANonce source, or a PMKID (handled above). kdv-agnostic.
     if((e->seen & PWNPAL_M2) && (e->seen & (PWNPAL_M1 | PWNPAL_M3))) v.loose = true;
-    // strict: replay-matched ANonce + M2 halves within the window.
-    if(e->a_used && e->m2_used && memcmp(e->a_replay, e->m2_replay, 8) == 0) {
+    // strict: replay-matched ANonce + M2 halves within the window, both PSK-crackable (kdv != 0).
+    if(e->a_used && e->m2_used && e->a_kdv != 0 && e->m2_kdv != 0 &&
+       memcmp(e->a_replay, e->m2_replay, 8) == 0) {
         uint32_t dt = e->a_ms > e->m2_ms ? e->a_ms - e->m2_ms : e->m2_ms - e->a_ms;
         if(dt <= window) v.strict = true;
     }

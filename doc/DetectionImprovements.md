@@ -35,18 +35,20 @@ later phase builds on it.
   (`pwnpal_eapol_locate` / `pwnpal_eapol_key` / `pwnpal_ds_bssid`); `reportHandshake` rewired
   with no behaviour change; `tests/test_eapol.cpp` added; `run.sh` now runs ASan+UBSan.
 - **Phase B — DONE** (`a890a2d`): per-(AP, client, replay) 4-way pairing (32-slot table).
-- **Phase B.1 — count vs crackable split** (this change): field validation showed strict
-  pairing made the *count* feel low (and exposed that the flashed board was likely stale — the
-  `PWNPAL_HS ` prefix length regressed to 13 in the rebrand, so a from-HEAD build would drop
-  every handshake line; fixed here). Rather than a strict count, we now emit **two verdicts** per
-  frame (`pwnpal_hs_note`): **loose** — pwnagotchi/bettercap `Complete()`: PMKID, or M2 with an
-  M1/M3, no replay/time match → drives the pwn count / skull; **strict** — a replay-matched M1+M2
-  **or M2+M3** in a 2 s window, or a PMKID → drives a per-AP *crackable* flag (`PWNPAL_CRACK`),
-  shown as ✓/CRACK in the browser and a `crack` tally in Stats. Adds the previously-missing
-  **M2+M3** crackable case. `tests/test_pairing.cpp` rewritten (loose vs strict, M2+M3, PMKID,
-  replay mismatch, window, `rc_dec`).
-- **► NEXT: field-validate on hardware** — with the count now loose, confirm the `crack` tally
-  matches `hcxpcapngtool` on the pulled pcaps (few false ✓, few missed ✓), then Phase C.
+- **Phase B.1 — count vs crackable split** (`pwnpal_hs_note`, two verdicts per frame): **loose** —
+  pwnagotchi/bettercap `Complete()`: PMKID, or M2 with an M1/M3, no replay/time match → the pwn
+  count / skull; **strict** — a replay-matched M1+M2 **or M2+M3** in a 2 s window, or a PMKID →
+  the per-AP *crackable* ✓. Adds the previously-missing **M2+M3** case. (Also fixed here: the
+  `PWNPAL_HS ` prefix length regressed to 13 in the rebrand, so a from-HEAD build dropped every
+  handshake line.)
+- **Phase B.2 — strict check moved to the Flipper + WPA3 exclusion**: the crackable verdict now
+  runs *on the Flipper*, over the exact bytes it writes to `<bssid>.pcap` (`pwnpal_note_crackable`),
+  not in the ESP's ephemeral RAM. So ✓ means "the saved file will crack," it can flip true later as
+  more frames land, it survives ESP reboots, and it needs **no firmware match** (the fap owns it;
+  `PWNPAL_CRACK` is gone). WPA3-SAE (`kdv 0`) is excluded from strict — hashcat can't take it —
+  while still counting loose. Parsers stay in `pwnpal_frames.h` (pure C, compiled into both).
+- **► NEXT: field-validate on hardware** — capture fresh, confirm the `crack` tally matches
+  `hcxpcapngtool` on the pulled pcaps (few false ✓, few missed ✓), then Phase C.
 - **Phase C / D / E — not started.**
 
 Unit-test status: `tests/run.sh` green under `-fsanitize=address,undefined` (test_eapol,

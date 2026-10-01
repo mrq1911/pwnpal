@@ -1519,7 +1519,12 @@ static void pwnpal_handle_epoch_line(PwnpalApp* app, const char* line) {
             // (e.g. biking, where APs don't persist) let the new-AP `adds` rate carry the verdict.
             bool recede_ok = cohort >= AUTO_RECEDE_MIN_COHORT &&
                              (recede >= AUTO_RECEDE_PCT || recede_avg >= AUTO_RECEDE_AVG_DB);
-            bool moving_epoch = recede_ok || (adds >= AUTO_ADDS_MOVE);
+            // adds alone ONLY when the cohort is too small for recede (sparse/fast) AND nonzero: a
+            // full recon table flushes (firmware, MAX_RECON) so every AP is re-added as an "add"
+            // with cohort 0 — that re-discovery is not movement. In a dense parked spot cohort is
+            // either ~0 (just flushed) or large, never in (0, MIN), so adds can't fire there.
+            bool adds_ok = cohort > 0 && cohort < AUTO_RECEDE_MIN_COHORT && adds >= AUTO_ADDS_MOVE;
+            bool moving_epoch = recede_ok || adds_ok;
             if(moving_epoch) {
                 model->auto_ap_moving = true;
                 model->auto_park_streak = 0;

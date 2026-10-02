@@ -16,7 +16,8 @@ full, self-contained pwnagotchi.
   client). Separately, the Flipper re-checks each frame it writes and flags an AP **✓/CRACK**
   only when the saved pcap is *genuinely crackable* — a replay-matched pair or a PMKID, WPA2-PSK
   only (WPA3-SAE excluded) — the same rule hcxpcapngtool applies. Shown in the browser and as a
-  `crack` tally in Stats.
+  `crack` tally in Stats. A **Verify captures** menu action re-reads every saved `.pcap` and flags
+  the crackable ones retroactively (so loot captured before this check still gets labeled).
 - **De-cloak** — recovers hidden ESSIDs from clients' (re)association requests and splices
   them into the capture, turning otherwise-uncrackable loot crackable. De-cloaked APs are
   marked in the list and logged to `decloak.csv`.

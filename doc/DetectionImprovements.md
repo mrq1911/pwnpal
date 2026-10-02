@@ -47,8 +47,13 @@ later phase builds on it.
   more frames land, it survives ESP reboots, and it needs **no firmware match** (the fap owns it;
   `PWNPAL_CRACK` is gone). WPA3-SAE (`kdv 0`) is excluded from strict — hashcat can't take it —
   while still counting loose. Parsers stay in `pwnpal_frames.h` (pure C, compiled into both).
-- **► NEXT: field-validate on hardware** — capture fresh, confirm the `crack` tally matches
-  `hcxpcapngtool` on the pulled pcaps (few false ✓, few missed ✓), then Phase C.
+- **Phase B.3 — "Verify captures" re-read**: the live check is forward-only (it can't label loot
+  already on the SD). A menu action (`pwnpal_verify_thread` / `pwnpal_pcap_crackable`) walks
+  `handshakes/*.pcap` on a background thread, runs the same parsers over each file with a generous
+  window, and sets `crackable` on the matching AP (persisted). Validated: on a 7-capture session it
+  flags exactly the 3 hcxpcapngtool calls crackable, 0 false positives.
+- **► NEXT: field-validate on hardware** — capture fresh + run Verify captures, confirm the `crack`
+  tally matches `hcxpcapngtool` on the pulled pcaps, then Phase C.
 - **Phase C / D / E — not started.**
 
 Unit-test status: `tests/run.sh` green under `-fsanitize=address,undefined` (test_eapol,

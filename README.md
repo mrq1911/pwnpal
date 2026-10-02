@@ -79,7 +79,7 @@ then launch **Apps → GPIO → Pwnpal**.
 ## Use
 
 - **OK** opens the menu (Recent APs, Pwned APs, Mode, Advertise, Ignore, Friends, Target,
-  Stats, tunables, Set home, Battery saver, Reset, About).
+  Stats, tunables, Set home, Battery saver, Verify captures, Reset, About).
 - **Up/Down** on the home screen cycle the capture **Mode** (shown top-right).
 - **Left/Right** scroll the persona's stat pages.
 - First launch shows a one-time **authorization** screen; accept to arm capture/deauth,

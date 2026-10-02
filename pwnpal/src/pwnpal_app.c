@@ -179,6 +179,7 @@ typedef enum {
     ScreenFriendQr, // QR of a friend's last location
     ScreenStats,
     ScreenAbout,
+    ScreenVerify, // progress/result of the "Verify captures" pcap re-read
 } Screen;
 
 // menu rows. order is display order; OK-activated vs Left/Right-adjustable is decided per-row
@@ -199,6 +200,7 @@ typedef enum {
     MenuQuiet, // toggle
     MenuTriangulate, // toggle: on-device location estimate + sample logging
     MenuBattery, // cycle: off / light / deep battery saver
+    MenuVerify, // OK: re-read saved pcaps and flag the genuinely crackable ones
     MenuReset, // OK: reset settings to defaults (with confirmation)
     MenuAbout, // OK: about (pinned last)
     MenuCount,
@@ -264,6 +266,13 @@ typedef struct {
     // no-GPS movement verdict from the firmware's per-epoch recede/adds signal (used when no fix)
     bool auto_ap_moving; // last epoch said we're moving (RSSI receding / new APs)
     uint8_t auto_park_streak; // consecutive "parked" epochs; settles auto_ap_moving off after a few
+    // "Verify captures": background re-read of handshakes/*.pcap to flag genuinely crackable APs.
+    bool verify_active;    // scan in progress
+    bool verify_abort;     // Back pressed -> stop early
+    bool verify_complete;  // finished (show the result line)
+    uint16_t verify_total; // pcap files to scan
+    uint16_t verify_seen;  // files processed so far
+    uint16_t verify_found; // crackable files found
     uint8_t last_cap_eff; // last effective capture mode pushed to the ESP (change-triggered resend)
     bool confirm_reset; // modal: "reset settings?" confirmation
 
@@ -332,6 +341,8 @@ typedef struct {
     ViewDispatcher* view_dispatcher;
     View* view;
     FuriThread* worker_thread;
+    FuriThread* verify_thread; // "Verify captures" pcap re-read (on-demand)
+    bool verify_started; // verify_thread has been run at least once (join before re-start/exit)
     FuriStreamBuffer* rx_stream;
     FuriHalSerialHandle* serial_handle;
     FuriTimer* timer;
@@ -2226,6 +2237,7 @@ static void pwnpal_draw_menu(Canvas* canvas, const PwnpalModel* model) {
                 model->saver == 1 ? "light" :
                                     "off");
             break;
+        case MenuVerify: label = "Verify captures"; break;
         case MenuReset: label = "Reset settings"; break;
         case MenuAbout: label = "About"; break;
         default: break;
@@ -2763,6 +2775,29 @@ static void pwnpal_draw_home(Canvas* canvas, PwnpalModel* model) {
     pwnpal_draw_last_pwnd(canvas, model);
 }
 
+static void pwnpal_draw_verify(Canvas* canvas, const PwnpalModel* model) {
+    canvas_clear(canvas);
+    draw_titlebar(canvas, "VERIFY CAPTURES", NULL);
+    canvas_set_font(canvas, FontSecondary);
+    char l[40];
+    if(model->verify_active) {
+        snprintf(l, sizeof(l), "scanning %u/%u", model->verify_seen, model->verify_total);
+        canvas_draw_str(canvas, 2, 26, l);
+        snprintf(l, sizeof(l), "crackable: %u", model->verify_found);
+        canvas_draw_str(canvas, 2, 38, l);
+        if(model->verify_total)
+            draw_progress(
+                canvas, 2, 44, FLIPPER_SCREEN_WIDTH - 4, 7, model->verify_seen, model->verify_total);
+        canvas_draw_str(canvas, 2, 62, "Back: cancel");
+    } else {
+        snprintf(l, sizeof(l), "%u crackable", model->verify_found);
+        canvas_draw_str(canvas, 2, 30, l);
+        snprintf(l, sizeof(l), "of %u saved captures", model->verify_total);
+        canvas_draw_str(canvas, 2, 42, l);
+        canvas_draw_str(canvas, 2, 62, "Back");
+    }
+}
+
 static void pwnpal_draw_callback(Canvas* canvas, void* ctx) {
     PwnpalModel* model = ctx;
     canvas_clear(canvas);
@@ -2793,6 +2828,7 @@ static void pwnpal_draw_callback(Canvas* canvas, void* ctx) {
     case ScreenFriendDetail: pwnpal_draw_frienddetail(canvas, model); return;
     case ScreenFriendQr: pwnpal_draw_friend_qr(canvas, model); return;
     case ScreenStats: pwnpal_draw_stats(canvas, model); return;
+    case ScreenVerify: pwnpal_draw_verify(canvas, model); return;
     case ScreenAbout: pwnpal_draw_about(canvas, model); return;
     case ScreenHome:
     default: pwnpal_draw_home(canvas, model); return;
@@ -3065,6 +3101,7 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
         }
         if(event->key == InputKeyOk) {
             bool open_name = false;
+            bool start_verify = false;
             with_view_model(
                 app->view, PwnpalModel * model,
                 {
@@ -3119,6 +3156,16 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
                         break;
                     }
                     case MenuStats: model->screen = ScreenStats; break;
+                    case MenuVerify:
+                        if(!model->verify_active) {
+                            model->verify_active = true;
+                            model->verify_abort = false;
+                            model->verify_complete = false;
+                            model->verify_total = model->verify_seen = model->verify_found = 0;
+                            model->screen = ScreenVerify;
+                            start_verify = true;
+                        }
+                        break;
                     case MenuReset: model->confirm_reset = true; break; // raise the confirm modal
                     case MenuAbout: model->screen = ScreenAbout; break;
                     case MenuSetHome:
@@ -3143,6 +3190,11 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
                 view_dispatcher_switch_to_view(app->view_dispatcher, 1);
             }
             if(need_advertise) pwnpal_send_advertise(app); // e.g. after clearing the target
+            if(start_verify) {
+                if(app->verify_started) furi_thread_join(app->verify_thread); // reclaim a prior run
+                furi_thread_start(app->verify_thread);
+                app->verify_started = true;
+            }
             return true;
         }
         return true; // swallow anything else in the menu
@@ -3439,6 +3491,21 @@ static bool pwnpal_input_callback(InputEvent* event, void* ctx) {
         }
         return true;
 
+    case ScreenVerify:
+        if(event->key == InputKeyBack) {
+            with_view_model(
+                app->view, PwnpalModel * model,
+                {
+                    if(model->verify_active)
+                        model->verify_abort = true; // stop the scan; thread flips it complete
+                    else
+                        model->screen = ScreenMenu; // done -> back to the menu
+                },
+                true);
+            return true;
+        }
+        return true; // swallow everything else while verifying
+
     case ScreenAbout:
         if(event->key == InputKeyBack) {
             with_view_model(
@@ -3484,6 +3551,120 @@ static uint32_t pwnpal_exit(void* ctx) {
 // Timer: fires ANIM_HZ/sec. Every ANIM_HZ-th fire is the 1 Hz heartbeat that ages the
 // persona, prunes peers, resends & saves; the in-between fires just scroll About.
 // ---------------------------------------------------------------------------
+
+// Re-read one saved pcap and decide if it holds a genuinely crackable capture, using the SAME
+// parsers the live path uses. Generous window (not the live 2 s) so it matches hcxpcapngtool's
+// replay-counter pairing over a whole file. Streams record-by-record; small fixed buffers.
+#define HS_READ_WIN_MS 3600000u
+static bool pwnpal_pcap_crackable(Storage* storage, const char* path) {
+    File* f = storage_file_alloc(storage);
+    bool crackable = false;
+    if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        uint8_t gh[24];
+        if(storage_file_read(f, gh, sizeof(gh)) == sizeof(gh)) { // skip the pcap global header
+            static PwnpalHs tab[8]; // one AP per file; only a few clients
+            for(int i = 0; i < 8; i++) tab[i].used = false;
+            static uint8_t frame[PCAP_SNAPLEN];
+            uint8_t rec[16];
+            uint32_t idx = 0;
+            while(!crackable && storage_file_read(f, rec, sizeof(rec)) == sizeof(rec)) {
+                uint32_t ts_sec = rec[0] | (rec[1] << 8) | (rec[2] << 16) | ((uint32_t)rec[3] << 24);
+                uint32_t ts_us = rec[4] | (rec[5] << 8) | (rec[6] << 16) | ((uint32_t)rec[7] << 24);
+                uint32_t incl = rec[8] | (rec[9] << 8) | (rec[10] << 16) | ((uint32_t)rec[11] << 24);
+                if(incl == 0 || incl > PCAP_SNAPLEN) break; // malformed length -> stop this file
+                if(storage_file_read(f, frame, incl) != incl) break;
+                int eo = pwnpal_eapol_locate(frame, (int)incl);
+                if(eo < 0) continue;
+                PwnpalEapolKey k;
+                if(!pwnpal_eapol_key(frame, (int)incl, eo, &k)) continue;
+                int msg = pwnpal_eapol_msg(&k);
+                if(msg == 0) continue;
+                bool pmkid = (msg == 1) && k.pmkid_nz;
+                if(!pmkid && !k.nonce_nz) continue;
+                const uint8_t* client = NULL;
+                pwnpal_ds_bssid(frame, (int)incl, &client);
+                uint32_t now = ts_sec * 1000u + ts_us / 1000u;
+                if(now == 0) now = ++idx; // some basic pcaps carry no usable timestamp
+                PwnpalHsVerdict v = pwnpal_hs_note(
+                    tab, 8, 0, client, msg, pmkid, k.kdv, k.replay, now, HS_READ_WIN_MS);
+                if(v.strict) crackable = true;
+            }
+        }
+        storage_file_close(f);
+    }
+    storage_file_free(f);
+    return crackable;
+}
+
+// Background "Verify captures": walk handshakes/*.pcap, flag the crackable ones on their AP record
+// (persisted). Progress + result land in the model for ScreenVerify. Cancelable via verify_abort.
+static int32_t pwnpal_verify_thread(void* ctx) {
+    PwnpalApp* app = ctx;
+    uint16_t total = 0, seen = 0, found = 0;
+    File* dir = storage_file_alloc(app->storage);
+    FileInfo fi;
+    char name[64];
+
+    // pass 1: count .pcap files (progress denominator)
+    if(storage_dir_open(dir, PWNPAL_HS_DIR)) {
+        while(storage_dir_read(dir, &fi, name, sizeof(name))) {
+            size_t nl = strlen(name);
+            if(!(fi.flags & FSF_DIRECTORY) && nl > 5 && strcmp(name + nl - 5, ".pcap") == 0) total++;
+        }
+    }
+    storage_dir_close(dir);
+    with_view_model(app->view, PwnpalModel * model, { model->verify_total = total; }, true);
+
+    // pass 2: re-read each and flag crackable APs
+    if(storage_dir_open(dir, PWNPAL_HS_DIR)) {
+        while(storage_dir_read(dir, &fi, name, sizeof(name))) {
+            bool abort = false;
+            with_view_model(app->view, PwnpalModel * model, { abort = model->verify_abort; }, false);
+            if(abort) break;
+            size_t nl = strlen(name);
+            if((fi.flags & FSF_DIRECTORY) || nl <= 5 || strcmp(name + nl - 5, ".pcap") != 0) continue;
+            char path[128];
+            snprintf(path, sizeof(path), "%s/%s", PWNPAL_HS_DIR, name);
+            bool crk = pwnpal_pcap_crackable(app->storage, path);
+            seen++;
+            if(crk) {
+                found++;
+                char key[13];
+                size_t kl = nl - 5 > 12 ? 12 : nl - 5; // filename sans ".pcap" is the 12-hex bssid
+                memcpy(key, name, kl);
+                key[kl] = '\0';
+                with_view_model(
+                    app->view, PwnpalModel * model,
+                    {
+                        int ai = ap_find(model, key);
+                        if(ai >= 0) model->aps[ai].crackable = true;
+                    },
+                    false);
+            }
+            with_view_model(
+                app->view, PwnpalModel * model,
+                {
+                    model->verify_seen = seen;
+                    model->verify_found = found;
+                },
+                false);
+        }
+    }
+    storage_dir_close(dir);
+    storage_file_free(dir);
+
+    // persist the freshly-flagged APs, then flip to the result view
+    with_view_model(
+        app->view,
+        PwnpalModel * model,
+        {
+            ap_db_save(app->storage, model);
+            model->verify_active = false;
+            model->verify_complete = true;
+        },
+        true);
+    return 0;
+}
 
 static void pwnpal_timer_callback(void* ctx) {
     PwnpalApp* app = ctx;
@@ -3859,6 +4040,14 @@ static PwnpalApp* pwnpal_app_alloc(void) {
     furi_thread_set_callback(app->worker_thread, pwnpal_worker);
     furi_thread_start(app->worker_thread);
 
+    // on-demand "Verify captures" scanner; started from the menu, not at boot
+    app->verify_thread = furi_thread_alloc();
+    furi_thread_set_name(app->verify_thread, "PwnpalVerify");
+    furi_thread_set_stack_size(app->verify_thread, 2048);
+    furi_thread_set_context(app->verify_thread, app);
+    furi_thread_set_callback(app->verify_thread, pwnpal_verify_thread);
+    app->verify_started = false;
+
     // ANIM_HZ heartbeat; per-second work gated inside, extra fires animate About
     app->timer = furi_timer_alloc(pwnpal_timer_callback, FuriTimerTypePeriodic, app);
     furi_timer_start(app->timer, furi_kernel_get_tick_frequency() / ANIM_HZ);
@@ -3894,6 +4083,12 @@ static void pwnpal_app_free(PwnpalApp* app) {
     furi_thread_flags_set(furi_thread_get_id(app->worker_thread), WorkerEventStop);
     furi_thread_join(app->worker_thread);
     furi_thread_free(app->worker_thread);
+
+    if(app->verify_started) { // a verify may be mid-scan: ask it to stop, then reclaim it
+        with_view_model(app->view, PwnpalModel * model, { model->verify_abort = true; }, false);
+        furi_thread_join(app->verify_thread);
+    }
+    furi_thread_free(app->verify_thread);
 
     view_dispatcher_remove_view(app->view_dispatcher, 1);
     text_input_free(app->text_input);

@@ -33,6 +33,49 @@ static inline bool pwnpal_rsn_requires_pmf(const uint8_t* f, int len) {
     return false;
 }
 
+// Extract a non-zero RSN PMKID from an (re)association request's RSN IE, if the client advertised a
+// cached one (fast-roaming / PMKID caching). That PMKID cracks with hashcat -m 22000 exactly like an
+// AP's M1 PMKID, given the AP MAC + client MAC + ESSID. Walks the tagged IEs to the RSN IE (id 48),
+// past version/group/pairwise/AKM/caps to the PMKID list. Bounds-checked; fills pmkid[16] on true.
+static inline bool pwnpal_assoc_pmkid(const uint8_t* f, int len, uint8_t pmkid[16]) {
+    if(len < 30) return false;
+    int sub = f[0] & 0xf0, ie;
+    if(sub == 0x00) ie = 28;      // assoc-req:   24 hdr + capability(2) + listen interval(2)
+    else if(sub == 0x20) ie = 34; // reassoc-req: + current-AP address(6)
+    else return false;
+    int p = ie;
+    while(p + 2 <= len) {
+        int id = f[p], l = f[p + 1];
+        if(p + 2 + l > len) break;
+        if(id == 48 && l >= 2) { // RSN IE
+            const uint8_t* r = f + p + 2;
+            int off = 2; // version
+            if(off + 4 > l) return false;
+            off += 4; // group cipher suite
+            if(off + 2 > l) return false;
+            int pc = r[off] | (r[off + 1] << 8); // pairwise cipher count
+            off += 2 + 4 * pc;
+            if(off + 2 > l) return false;
+            int ac = r[off] | (r[off + 1] << 8); // AKM suite count
+            off += 2 + 4 * ac;
+            if(off + 2 > l) return false;
+            off += 2; // RSN capabilities
+            if(off + 2 > l) return false;
+            int nk = r[off] | (r[off + 1] << 8); // PMKID count
+            off += 2;
+            if(nk <= 0 || off + 16 > l) return false;
+            bool nz = false;
+            for(int b = 0; b < 16; b++) {
+                pmkid[b] = r[off + b];
+                if(pmkid[b]) nz = true;
+            }
+            return nz; // the first PMKID, if it isn't all-zero
+        }
+        p += 2 + l;
+    }
+    return false;
+}
+
 // --- EAPOL / 4-way parsing (extracted from reportHandshake; pure + host-tested) ---
 
 // Locate the 802.1X (EAPOL) header: scan for the 0x888e etherType in the LLC/SNAP region and

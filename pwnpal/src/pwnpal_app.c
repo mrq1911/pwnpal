@@ -1373,7 +1373,21 @@ static void pwnpal_handle_ap_line(PwnpalApp* app, const char* line) {
 #define HS_CRACK_WIN_MS 2000
 static void pwnpal_note_crackable(PwnpalApp* app, const char* key, const uint8_t* frame, size_t flen) {
     int eo = pwnpal_eapol_locate(frame, (int)flen);
-    if(eo < 0) return; // not EAPOL
+    if(eo < 0) {
+        // not EAPOL — a roaming client's (re)assoc frame may carry a crackable PMKID (RSN IE)
+        uint8_t pmk[16];
+        if(pwnpal_assoc_pmkid(frame, (int)flen, pmk)) {
+            with_view_model(
+                app->view,
+                PwnpalModel * model,
+                {
+                    int ai = ap_find(model, key);
+                    if(ai >= 0) model->aps[ai].crackable = true;
+                },
+                false);
+        }
+        return;
+    }
     PwnpalEapolKey k;
     if(!pwnpal_eapol_key(frame, (int)flen, eo, &k)) return;
     int msg = pwnpal_eapol_msg(&k);
@@ -3574,7 +3588,11 @@ static bool pwnpal_pcap_crackable(Storage* storage, const char* path) {
                 if(incl == 0 || incl > PCAP_SNAPLEN) break; // malformed length -> stop this file
                 if(storage_file_read(f, frame, incl) != incl) break;
                 int eo = pwnpal_eapol_locate(frame, (int)incl);
-                if(eo < 0) continue;
+                if(eo < 0) {
+                    uint8_t pmk[16]; // non-EAPOL: a (re)assoc frame may hold a crackable PMKID
+                    if(pwnpal_assoc_pmkid(frame, (int)incl, pmk)) crackable = true;
+                    continue;
+                }
                 PwnpalEapolKey k;
                 if(!pwnpal_eapol_key(frame, (int)incl, eo, &k)) continue;
                 int msg = pwnpal_eapol_msg(&k);

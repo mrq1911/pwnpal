@@ -18,6 +18,8 @@ full, self-contained pwnagotchi.
   only (WPA3-SAE excluded) — the same rule hcxpcapngtool applies. Shown in the browser and as a
   `crack` tally in Stats. A **Verify captures** menu action re-reads every saved `.pcap` and flags
   the crackable ones retroactively (so loot captured before this check still gets labeled).
+- **Passive PMKID** — harvests cached PMKIDs from roaming clients' (re)association-request RSN
+  IEs (crackable with `-m 22000` like an AP PMKID), free loot with no extra attack traffic.
 - **De-cloak** — recovers hidden ESSIDs from clients' (re)association requests and splices
   them into the capture, turning otherwise-uncrackable loot crackable. De-cloaked APs are
   marked in the list and logged to `decloak.csv`.

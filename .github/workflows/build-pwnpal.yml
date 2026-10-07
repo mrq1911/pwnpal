@@ -37,6 +37,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # best-effort boards (experimental) may fail without failing the run; verified boards must build.
+    continue-on-error: ${{ matrix.board.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -56,16 +58,19 @@ jobs:
             chip: esp32s2
             fqbn: "esp32:esp32:esp32s2:PartitionScheme=min_spiffs,FlashSize=4M"
             boot_addr: "0x1000"
+            experimental: true
           - name: multiboard-s3
             flag: MARAUDER_MULTIBOARD_S3
             chip: esp32s3
             fqbn: "esp32:esp32:esp32s3:PartitionScheme=min_spiffs,FlashSize=8M"
             boot_addr: "0x0"
+            experimental: true
           - name: devboard-pro
             flag: MARAUDER_DEV_BOARD_PRO
             chip: esp32s3
             fqbn: "esp32:esp32:esp32s3:PartitionScheme=min_spiffs,FlashSize=8M"
             boot_addr: "0x0"
+            experimental: true
     steps:
       - name: Checkout pwnpal (this repo)
         uses: actions/checkout@v4
@@ -201,3 +206,20 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          append_body: true
+          body: |
+            **A full pwnagotchi on your Flipper Zero + ESP32 WiFi board** — a social pwngrid peer that
+            captures WPA/WPA2 handshakes & PMKIDs, GPS-wardrives, de-cloaks hidden SSIDs, and grows a
+            persona, all from a native Flipper app. One flash = full Marauder GUI + the `pwnpal` command.
+
+            ### Highlights
+            - **Social pwngrid peer** — broadcasts a pwnagotchi-compatible beacon; nearby units say hi and befriend it.
+            - **Real capture** — 4-way handshakes + PMKID (incl. passively harvested from roaming clients' (re)assoc frames), per-BSSID `.pcap` for hashcat `-m 22000`.
+            - **Crackable check** — flags which captures will actually crack (replay-matched pair or PMKID, WPA2-PSK) on-device, plus a **Verify captures** pass over existing loot.
+            - **De-cloak** hidden ESSIDs · **GPS wardrive** (WiGLE `wardrive.csv`) · **modes** Wardrive/Roam/Siege/Auto · **Flock Safety camera** detection (opt-in) · battery saver · offline web-export.
+
+            ### Install
+            1. Flash your board's `pwnpal-<board>.bin` with **ESP Flasher** → Custom slot @ `0x0`. Reference board: **Feberis Pro** (classic ESP32).
+            2. Copy `pwnpal.fap` to `/ext/apps/GPIO/`, launch **Apps → GPIO → Pwnpal**.
+
+            > ⚠️ **Authorized use only.** Deauth + handshake capture are active radio attacks; they ship **off** behind a one-time on-device consent gate. You are responsible for complying with local law.
